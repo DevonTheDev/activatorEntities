@@ -1,5 +1,6 @@
-include("autorun/server/sv_config.lua")
 include("shared.lua")
+
+local activeFrame
 
 -- Draws the NPC model and the text
 function ENT:Draw()
@@ -12,13 +13,31 @@ end
 net.Receive("OpenInteractionMenu", function(len)
 
     -- Gets all the information about the NPCs here
-    ply = net.ReadEntity()
-    ent = net.ReadEntity()
-    eventIdentifier = net.ReadString()
-    npcDialogue = net.ReadString()
+    local ply = net.ReadEntity()
+    local ent = net.ReadEntity()
+    local eventIdentifier = net.ReadString()
+    local npcDialogue = net.ReadString()
+    if not IsValid(ply) or not IsValid(ent) then return end
+
+    -- The new server message has already replaced the previous interaction.
+    if IsValid(activeFrame) then
+        activeFrame.replaced = true
+        activeFrame:Close()
+    end
 
     -- Creates the background derma frame
     local frame = vgui.Create("DFrame")
+    activeFrame = frame
+    local submitted, closed = false, false
+    frame.OnClose = function()
+        if closed then return end
+        closed = true
+        if activeFrame == frame then activeFrame = nil end
+        if submitted or frame.replaced then return end
+        net.Start("CloseInteractionMenu")
+            net.WriteEntity(ent)
+        net.SendToServer()
+    end
     ply:ScreenFade(SCREENFADE.IN, color_black, 0.3, 0)
     frame:SetVisible(true)
     frame:SetTitle("")
@@ -45,17 +64,13 @@ net.Receive("OpenInteractionMenu", function(len)
     activatorButton:SetPos(0, ScrH() - 100)
 
     activatorButton.DoClick = function()
-
-        frame:Close() -- Closes the frame
-        net.Start("CloseInteractionMenu") -- Alerts the server the frame has been closed
-            net.WriteEntity(ent)
-        net.SendToServer()
-
-        -- Sends the identifier to the server for a check
+        if submitted or closed then return end
+        submitted = true
+        -- Starting consumes the server interaction; do not cancel it first.
         net.Start("SendNPCInformation")
             net.WriteString(eventIdentifier)
         net.SendToServer()
-
+        frame:Close()
     end
 
     -- Sets up the button to quit the menu

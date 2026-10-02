@@ -114,45 +114,42 @@ Below are all the functions needed to run the code. It is suggested that you do 
 
 --]]
 
--- Returns all the valid spawn positions for the enemies
-function returnSpawnPositions(mapName)
-enemySpawnPosition = {}
-    for k, v in pairs(SpawnPositions) do
-        if v.map == mapName then
-            enemySpawnPosition = v.enemySpawnPositions
-        end
+-- Return nil for missing/empty lists, and support sparse spawn-position tables.
+local function randomValue(values)
+    local choices = {}
+    for _, value in pairs(values or {}) do
+        choices[#choices + 1] = value
     end
-    return enemySpawnPosition[math.random(1, table.maxn(enemySpawnPosition))]
+    if #choices == 0 then return nil end
+    return choices[math.random(1, #choices)]
 end
 
--- Returns all the valid spawn positions for the activators
-function returnActivatorSpawns(mapName)
-activatorSpawnPosition = {}
-    for k, v in pairs(SpawnPositions) do
-        if v.map == mapName then
-            activatorSpawnPosition = v.activatorSpawnPositions
-        end
+local function mapInformation(mapName)
+    for _, information in pairs(SpawnPositions) do
+        if information.map == mapName then return information end
     end
-    return activatorSpawnPosition[math.random(1, table.maxn(activatorSpawnPosition))]
+end
+
+-- Returns one configured enemy/activator position for this map.
+function returnSpawnPositions(mapName)
+    local information = mapInformation(mapName)
+    return information and randomValue(information.enemySpawnPositions)
+end
+
+function returnActivatorSpawns(mapName)
+    local information = mapInformation(mapName)
+    return information and randomValue(information.activatorSpawnPositions)
 end
 
 function determineRandomEvent()
-possibleEvents = {}
-    for k, v in pairs(NPCEdits) do
-        possibleEvents[k] = v.name
-    end
-    return possibleEvents[math.random(1, table.maxn(possibleEvents))]
+    local event = randomValue(NPCEdits)
+    return event and event.name
 end
 
--- Returns the activators information
 function returnNPCInformation(NPCName)
-returnedInformation = {}
-    for k, v in pairs(NPCEdits) do
-        if v.name == NPCName then
-            returnedInformation = v.information
-        end
+    for _, event in pairs(NPCEdits or {}) do
+        if event.name == NPCName then return event.information end
     end
-    return returnedInformation
 end
 
 -- Returns the delayBetweenEvents variable
@@ -186,125 +183,50 @@ function returnEnemyHealth()
     return enemyHealth
 end
 
--- Function that allows the player to modify the spawn positions in game
-hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
-
-maxEntries = table.maxn(SpawnPositions)
-if(sender:IsAdmin()) then -- Checks to see if the sender is an admin
-    if (text == "!setActivatorSpawn") then
-        for k, v in pairs(SpawnPositions) do
-            if v.map == game.GetMap() then -- If the v.map value is equal to our current map
-                table.insert(v.activatorSpawnPositions, table.maxn(v.activatorSpawnPositions) + 1, sender:GetPos()) -- Inserts the players current position into the last value
-                sender:ChatPrint("New Activator Spawn Successfully Set at " .. tostring(sender:GetPos()) .. ".") -- Notifies the player the value has been added
-            end
-            if k >= maxEntries then -- If the loop has finished
-                if(v.map != game.GetMap()) then -- If the map value has not been found
-
-                    -- Insert a template to import into
-                    mapInformation = {
-                        map = game.GetMap(),
-                        enemySpawnPositions = 
-                        {
-                            
-                        },
-                        activatorSpawnPositions = {
-                            [1] = sender:GetPos()
-                        },
-        
-                    }   
-
-                    table.insert(SpawnPositions, maxEntries + 1, mapInformation)
-
-                    PrintTable(SpawnPositions)
-
-                    sender:ChatPrint("A new map template has been created for " .. game.GetMap() .. ". The activator position has been set at " .. tostring(sender:GetPos()) .. ".")
-
-                end
-            end
-        end
-    end
-
-    if (text == "!setEnemySpawn") then
-        for k, v in pairs(SpawnPositions) do
-            if v.map == game.GetMap() then -- If the v.map value is equal to our current map
-                table.insert(v.enemySpawnPositions, table.maxn(v.enemySpawnPositions) + 1, sender:GetPos()) -- Inserts the players current position into the last value
-                sender:ChatPrint("New Enemy Spawn Successfully Set at " .. tostring(sender:GetPos()) .. ".") -- Notifies the player the value has been added
-            end 
-            if k >= maxEntries then -- If the loop has finished
-                if(v.map != game.GetMap()) then -- If the map value has not been found
-
-                    -- Insert a template to import into
-                    mapInformation = {
-                        map = game.GetMap(),
-                        enemySpawnPositions = 
-                        {
-                            [1] = sender:GetPos()
-                        },
-                        activatorSpawnPositions = {
-                            
-                        },
-        
-                    }   
-
-                    table.insert(SpawnPositions, maxEntries + 1, mapInformation)
-
-                    PrintTable(SpawnPositions)
-
-                    sender:ChatPrint("A new map template has been created for " .. game.GetMap() .. ". The enemy position has been set at " .. tostring(sender:GetPos()) .. ".")
-                
-                end
-            end
-        end
-    end
-
-    -- Removes the last entry in the activator spawn table
-    if (text == "!removeActivatorSpawn") then
-        for k, v in pairs(SpawnPositions) do
-            if(returnActivatorSpawns(game.GetMap()) != nil) then -- If there are spawns to remove
-                if(v.map == game.GetMap()) then
-                    sender:ChatPrint("The previous activator spawn was successfully removed.")
-                    table.remove(v.activatorSpawnPositions, table.maxn(v.activatorSpawnPositions))  
-                end
-            end
-            if(returnActivatorSpawns(game.GetMap()) == nil) then
-                sender:ChatPrint("There are no more activator spawns to remove.")
-            end
-        end
-    end
-
-    -- Removes the last entry in the enemy spawn table
-    if (text == "!removeEnemySpawn") then
-        for k, v in pairs(SpawnPositions) do
-            if(v.map == game.GetMap()) then
-                if(returnSpawnPositions(game.GetMap()) != nil) then -- If there are spawns to remove
-                    sender:ChatPrint("The previous enemy spawn was successfully removed.")
-                    table.remove(v.enemySpawnPositions, table.maxn(v.enemySpawnPositions))  
-                end
-                if(returnSpawnPositions(game.GetMap()) == nil) then
-                    sender:ChatPrint("There are no more enemy spawns to remove.")
-                end
-            end
-        end
-    end
-
 util.AddNetworkString("entitiesDeleted")
-    -- Stops the current event by removing all the entities
-    if(text == "!stopEvent") then
-        currentEntities = ents.FindByName("devonsSpawnedEntity")
-        if(currentEntities != nil) then
-            for k, v in pairs(currentEntities) do
-                v:Remove()
-            end
-            timer.Start("activatorSpawner") -- Restarts the timer
+
+-- Function that allows admins to modify spawn positions in game.
+hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
+    if not sender:IsAdmin() then return end
+
+    if text == "!stopEvent" then
+        if stopActivatorEvent and stopActivatorEvent() then
             net.Start("entitiesDeleted")
             net.Send(player.GetAll())
-        end
-        if(currentEntities == nil) then
+        else
             sender:ChatPrint("There is no event running")
         end
+        return
     end
-end
-    
+
+    local commands = {
+        ["!setActivatorSpawn"] = {"activatorSpawnPositions", "Activator", true},
+        ["!setEnemySpawn"] = {"enemySpawnPositions", "Enemy", true},
+        ["!removeActivatorSpawn"] = {"activatorSpawnPositions", "activator", false},
+        ["!removeEnemySpawn"] = {"enemySpawnPositions", "enemy", false},
+    }
+    local command = commands[text]
+    if not command then return end
+
+    local information = mapInformation(game.GetMap())
+    if command[3] then
+        if not information then
+            information = {map = game.GetMap(), enemySpawnPositions = {}, activatorSpawnPositions = {}}
+            table.insert(SpawnPositions, information)
+        end
+        local positions = information[command[1]]
+        positions[table.maxn(positions) + 1] = sender:GetPos()
+        sender:ChatPrint("New " .. command[2] .. " Spawn Successfully Set at " .. tostring(sender:GetPos()) .. ".")
+    else
+        local positions = information and information[command[1]]
+        local last = positions and table.maxn(positions) or 0
+        if last > 0 then
+            positions[last] = nil
+            sender:ChatPrint("The previous " .. command[2] .. " spawn was successfully removed.")
+        else
+            sender:ChatPrint("There are no more " .. command[2] .. " spawns to remove.")
+        end
+    end
 end)
 
 -- Saves the table of info when the lua environment closes
