@@ -144,7 +144,7 @@ end)
 timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
     if eventActive or player.GetCount() < returnMinNumberOfPlayers() then return end
     local identifier = determineRandomEvent()
-    if identifier ~= "Raid" or not returnNPCInformation(identifier) then return end
+    if not identifier or not returnNPCInformation(identifier) then return end
     local spawnPosition = returnActivatorSpawns(game.GetMap())
     if not spawnPosition then return end
 

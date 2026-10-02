@@ -117,6 +117,62 @@ test("an empty event config does not crash the spawner", function()
     local env=gmod.new(); env.NPCEdits={}; eq(env.determineRandomEvent(), nil)
     env.fireTimer("activatorSpawner"); eq(#env.ents.FindByClass("activatorent"), 0)
 end)
+for _, identifier in ipairs({"Ambush", "Supply Raid"}) do
+    test("a custom event name drives the full configured encounter: " .. identifier, function()
+        local env=gmod.new()
+        env.NPCEdits[1].name=identifier
+        local info=env.NPCEdits[1].information
+        info.activatorModel="models/barney.mdl"
+        info.npcPath="npc_zombie"
+        info.maxNPCs=2
+        info.dialogue="Synthetic custom encounter"
+        local ply=env.entity("player")
+        env.fireTimer("activatorSpawner")
+        local activators=env.ents.FindByClass("activatorent")
+        eq(#activators, 3, "custom definitions must not silently disable spawning")
+        for _, ent in ipairs(activators) do
+            eq(ent.EventIdentifier, identifier)
+            eq(ent:GetModel(), info.activatorModel)
+        end
+        local ent=activators[1]
+        ply:SetPos(ent:GetPos()); ent:AcceptInput("Use", ply, ply)
+        local values=env.messages[1].values
+        eq(values[3], identifier); eq(values[4], info.dialogue)
+        local client=gmod.new(true)
+        client.receive("OpenInteractionMenu", nil, values[1], values[2], values[3], values[4])
+        client.panels[3]:DoClick()
+        for _, message in ipairs(client.messages) do
+            env.receive(message.name, ply, (table.unpack or unpack)(message.values))
+        end
+        local enemies=env.ents.FindByName("devonsSpawnedEntity")
+        eq(#enemies, 2); eq(env.totalEnemies, 2)
+        eq(#env.ents.FindByClass("activatorent"), 0)
+        for _, enemy in ipairs(enemies) do
+            eq(enemy:GetClass(), "npc_zombie")
+            eq(enemy.health, env.returnEnemyHealth())
+            env.fire("OnNPCKilled", enemy, ply)
+        end
+        eq(env.totalEnemies, 0); eq(env.messageCount("roundFinished"), 1)
+        eq(env.timers.activatorSpawner.stopped, false)
+        env.fireTimer("activatorSpawner")
+        eq(#env.ents.FindByClass("activatorent"), 3)
+    end)
+end
+test("the spawner accepts a custom event from a sparse definition list", function()
+    local env=gmod.new(); local definition=env.NPCEdits[1]
+    definition.name="Sparse Encounter"; env.NPCEdits={[7]=definition}
+    env.entity("player"); env.fireTimer("activatorSpawner")
+    local activators=env.ents.FindByClass("activatorent")
+    eq(#activators, 3)
+    for _, ent in ipairs(activators) do eq(ent.EventIdentifier, definition.name) end
+end)
+test("an unknown selected event cannot create unusable activators", function()
+    local env=gmod.new(); env.entity("player")
+    env.determineRandomEvent=function() return "Unknown" end
+    env.fireTimer("activatorSpawner")
+    eq(#env.ents.FindByClass("activatorent"), 0)
+    eq(env.timers.activatorSpawner.stopped, false)
+end)
 for _, kind in ipairs({"Activator", "Enemy"}) do
     test("add " .. kind .. " spawn without duplicating an existing map", function()
         local env=gmod.new(); local admin=env.entity("player"); admin.admin=true

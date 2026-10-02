@@ -8,7 +8,10 @@ appear after the configured delay.
 
 Copy `roleplayAddon` into the server's `garrysmod/addons` directory. Configure
 `roleplayAddon/lua/autorun/server/sv_config.lua`; the supplied settings, NPC
-models, health, counts, dialogue, and map positions are unchanged.
+models, health, counts, dialogue, and map positions are unchanged. Each named
+entry in `NPCEdits` can be selected by the timed spawner; custom event names are
+supported alongside the default `Raid`. Its model, dialogue, enemy class and
+count follow the selected definition.
 
 Admin chat commands:
 
@@ -85,7 +88,8 @@ texlua tests/run.lua
 
 The suite runs the actual addon Lua in isolated environments with Garry's Mod
 API doubles. It covers authorization, stale/repeated requests, client/server
-message ordering, event completion and cleanup, missing spawn configuration,
+message ordering, custom named event lifecycles, event completion and cleanup,
+missing spawn configuration,
 admin spawn editing, and completion-popup replacement/one-shot cleanup. Persistence tests also cover invalid decoded structures,
 sparse native Vectors, intentionally empty lists, file-name precedence,
 read/serialization/write failures, immediate persistence of all four spawn
@@ -117,7 +121,9 @@ in-game check. Suggested multiplayer smoke test:
 6. On a disposable server, add/remove each spawn type and check that
    `devonsspawninfo.json` changes before shutdown. Restart and confirm the edited
    positions reload, including on a case-sensitive Linux server.
-7. On a disposable server with a backup, try malformed saved JSON. Confirm the
+7. Rename the configured event on a disposable server, then check that its
+   activators appear and its dialogue, enemies and completion still work.
+8. On a disposable server with a backup, try malformed saved JSON. Confirm the
    configured positions work, a warning appears, and shutdown leaves the bad
    file unchanged even after admin edits. Repair the file while stopped and
    restart; confirm loading and saving resume. Check the mixed-case fallback
