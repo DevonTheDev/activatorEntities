@@ -229,22 +229,94 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     end
 end)
 
--- Saves the table of info when the lua environment closes
+-- file.Write lowercases DATA paths; use the same name when reading on Linux.
+local spawnDataFile = "devonsspawninfo.json"
+local legacySpawnDataFile = "DevonsSpawnInfo.json"
+local canSaveSpawnPositions = false
+
+local function finiteNumber(value)
+    return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+end
+
+local function listIndex(value)
+    return finiteNumber(value) and value >= 1 and value == math.floor(value)
+end
+
+local function validPositionList(positions)
+    if type(positions) ~= "table" then return false end
+    for key, position in pairs(positions) do
+        if not listIndex(key) or not isvector(position)
+            or not finiteNumber(position.x) or not finiteNumber(position.y) or not finiteNumber(position.z) then
+            return false
+        end
+    end
+    return true
+end
+
+-- Validate without rebuilding lists: preserve sparse keys and native Vectors
+-- restored by util.JSONToTable from GMod's existing "[x y z]" representation.
+local function validSpawnPositions(positions)
+    if type(positions) ~= "table" then return false end
+    for key, information in pairs(positions) do
+        if not listIndex(key) or type(information) ~= "table"
+            or type(information.map) ~= "string" or information.map == ""
+            or not validPositionList(information.enemySpawnPositions)
+            or not validPositionList(information.activatorSpawnPositions) then
+            return false
+        end
+    end
+    return true
+end
+
+local function readSpawnData()
+    local filename = spawnDataFile
+    if not file.Exists(filename, "DATA") then
+        filename = legacySpawnDataFile
+        if not file.Exists(filename, "DATA") then return nil, nil end
+    end
+    return file.Read(filename, "DATA"), filename
+end
+
+-- Only save after initialization has established that existing data is safe.
 hook.Add("ShutDown", "saveTheTables", function()
-
-    converted = util.TableToJSON(SpawnPositions) -- Converts the spawnpositions table into a JSON file
-    file.Write("DevonsSpawnInfo.json", converted) -- Writes the file
+    if not canSaveSpawnPositions then
+        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Spawn saving is disabled; existing data was left untouched.\n")
+        return
+    end
+    if not validSpawnPositions(SpawnPositions) then
+        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Invalid current spawn positions; existing data was left untouched.\n")
+        return
+    end
+    local encoded, converted = pcall(util.TableToJSON, SpawnPositions)
+    if not encoded or type(converted) ~= "string" or converted == "" then
+        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not serialize spawn positions; existing data was left untouched.\n")
+        return
+    end
+    local written, success = pcall(file.Write, spawnDataFile, converted)
+    if not written or success ~= true then
+        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not save spawn positions to " .. spawnDataFile .. ".\n")
+        return
+    end
     print("DEVONS ROLEPLAY ADDON - The spawn positions table was successfully saved")
-
 end)
 
--- Loads the file when the gamemode initializes
 hook.Add("Initialize", "loadTheTables", function()
-
-    if(file.Read("DevonsSpawnInfo.json", "DATA") != nil) then -- Checks to see if the file exists before attempting to read it
-        local JSONData = file.Read("DevonsSpawnInfo.json", "DATA") -- Reads the JSON file
-        SpawnPositions = util.JSONToTable(JSONData)  -- Sets the spawn positons table = to the data inside the file
-        print("DEVONS ROLEPLAY ADDON - The spawn positions table was successfully loaded")
+    canSaveSpawnPositions = false
+    local read, JSONData, filename = pcall(readSpawnData)
+    if not read or (filename and type(JSONData) ~= "string") then
+        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not read saved spawn positions. Using configured positions; saving is disabled. Back up and repair the DATA file, then restart.\n")
+        return
     end
-
+    if not filename then
+        canSaveSpawnPositions = true
+        return
+    end
+    local decoded, positions = pcall(util.JSONToTable, JSONData)
+    if not decoded or not validSpawnPositions(positions) then
+        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Invalid spawn positions in " .. filename .. ". Using configured positions; saving is disabled. Back up and repair the DATA file, then restart.\n")
+        return
+    end
+    SpawnPositions = positions
+    canSaveSpawnPositions = true
+    print("DEVONS ROLEPLAY ADDON - The spawn positions table was successfully loaded")
 end)

@@ -65,6 +65,7 @@ function M.new(client)
     local vector = {}
     vector.__index = vector
     function env.Vector(x, y, z) return setmetatable({x=x, y=y, z=z}, vector) end
+    function env.isvector(value) return type(value) == "table" and getmetatable(value) == vector end
     function vector.__add(a, b) return env.Vector(a.x+b.x, a.y+b.y, a.z+b.z) end
     function vector:DistToSqr(other) return (self.x-other.x)^2+(self.y-other.y)^2+(self.z-other.z)^2 end
     env.util = {AddNetworkString = function() end}

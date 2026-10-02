@@ -19,6 +19,38 @@ Admin chat commands:
 Positions are saved to the DATA directory on clean server shutdown and loaded
 on initialization. Back up the existing spawn data before testing changes.
 
+### Saved spawn data and recovery
+
+- The canonical filename is `garrysmod/data/devonsspawninfo.json`. Garry's Mod
+  [lowercases `file.Write` paths](https://wiki.facepunch.com/gmod/file.Write),
+  while [reads can be case-sensitive](https://wiki.facepunch.com/gmod/file.Read).
+  If that file is absent, the historical `DevonsSpawnInfo.json` spelling is
+  also checked. A present canonical file always takes precedence, even if it
+  cannot be read or validated. A successfully loaded mixed-case file is left
+  in place; the next clean shutdown writes the canonical lowercase name.
+- The complete decoded file is checked before it replaces the configured
+  `SpawnPositions`. Map records must have a nonempty string `map` and both
+  `enemySpawnPositions` and `activatorSpawnPositions` tables. Map/position lists
+  use positive integer keys; gaps are preserved. Positions must be native
+  Vectors with finite coordinates. Garry's Mod's existing
+  [Vector JSON representation](https://wiki.facepunch.com/gmod/File_Based_Storage)
+  is still read and written through its own JSON functions. No coordinate-table
+  conversion or schema migration is performed.
+- Empty map configurations and empty position lists are valid and remain empty.
+  Invalid JSON, wrong-shaped records/lists, or unreadable existing files retain
+  the configured positions and log a warning. The entire load is rejected rather
+  than silently discarding individual entries.
+- After a failed load, saving is disabled for that server session so shutdown
+  cannot overwrite the recoverable file with defaults. Admin spawn commands
+  still work in memory, but those edits are **not saved**. Back up and repair
+  the reported DATA file while the server is stopped, then restart to re-enable
+  saving. To deliberately start fresh, move the backed-up file out of DATA
+  before restarting; check both filename spellings if both exist.
+- A shutdown before initialization, invalid runtime spawn data, or serialization
+  failure also skips writing. Write failures are reported without a success
+  message. Writes are not atomic backups: crashes, disk failures, and external
+  edits made while the server is running are not protected by this validation.
+
 ## Interaction and event lifecycle
 
 - Starting requires a server-issued interaction belonging to the requesting
@@ -47,7 +79,14 @@ texlua tests/run.lua
 The suite runs the actual addon Lua in isolated environments with Garry's Mod
 API doubles. It covers authorization, stale/repeated requests, client/server
 message ordering, event completion and cleanup, missing spawn configuration,
-and admin spawn editing. It exits nonzero on failure. The harness supports Lua
+and admin spawn editing. Persistence tests also cover invalid decoded structures,
+sparse native Vectors, intentionally empty lists, file-name precedence,
+read/serialization/write failures, and preservation after a rejected load.
+Only in-memory file/codec doubles and test fixtures are used; the tests never
+read or write a server's DATA directory. They exercise the addon at the codec
+boundary, not Garry's Mod's actual JSON parser or filesystem.
+
+The suite exits nonzero on failure. The harness supports Lua
 5.1 and newer; its small source adapter translates GLua operators/comments.
 
 These tests do **not** run the Garry's Mod engine. NPC behavior, entity networking,
@@ -64,12 +103,18 @@ in-game check. Suggested multiplayer smoke test:
    resumes without a victory notice. Repeat with the admin `!stopEvent` command.
 5. On an unconfigured map, add both spawn types, remove their final positions,
    and re-add them. Confirm there are no Lua errors or duplicate map entries.
-6. Restart the server cleanly and check that edited spawn positions reload.
+6. Restart the server cleanly and check that edited spawn positions reload from
+   `devonsspawninfo.json`, including on a case-sensitive Linux server.
+7. On a disposable server with a backup, try malformed saved JSON. Confirm the
+   configured positions work, a warning appears, and shutdown leaves the bad
+   file unchanged even after admin edits. Repair the file while stopped and
+   restart; confirm loading and saving resume. Check the mixed-case fallback
+   separately with the lowercase file absent.
 
 ## Remaining follow-ups
 
-- Validate/migrate malformed or older saved spawn JSON instead of trusting it,
-  and consider persisting edits immediately rather than only on shutdown
+- Consider saving admin edits immediately and using an atomic/backup write flow;
+  current saving still runs only on clean shutdown
 - Exercise live Lua hot-reload during an active encounter; local round state is
   intentionally not persisted across script reloads
 - Check the existing full-screen dialogue layout at different resolutions and
