@@ -16,8 +16,9 @@ Admin chat commands:
 - `!removeActivatorSpawn` / `!removeEnemySpawn`: remove the last position
 - `!stopEvent`: remove the current event's enemies and restart the spawn delay
 
-Positions are saved to the DATA directory on clean server shutdown and loaded
-on initialization. Back up the existing spawn data before testing changes.
+Accepted spawn additions/removals are saved immediately to the DATA directory,
+with another save on clean server shutdown. Positions load on initialization.
+Back up the existing spawn data before testing changes.
 
 ### Saved spawn data and recovery
 
@@ -27,7 +28,8 @@ on initialization. Back up the existing spawn data before testing changes.
   If that file is absent, the historical `DevonsSpawnInfo.json` spelling is
   also checked. A present canonical file always takes precedence, even if it
   cannot be read or validated. A successfully loaded mixed-case file is left
-  in place; the next clean shutdown writes the canonical lowercase name.
+  in place; the next successful admin edit or clean shutdown writes the canonical
+  lowercase name.
 - The complete decoded file is checked before it replaces the configured
   `SpawnPositions`. Map records must have a nonempty string `map` and both
   `enemySpawnPositions` and `activatorSpawnPositions` tables. Map/position lists
@@ -42,14 +44,18 @@ on initialization. Back up the existing spawn data before testing changes.
   than silently discarding individual entries.
 - After a failed load, saving is disabled for that server session so shutdown
   cannot overwrite the recoverable file with defaults. Admin spawn commands
-  still work in memory, but those edits are **not saved**. Back up and repair
+  still work in memory, but those edits are **not saved**. The admin receives an
+  explicit session-only warning with each accepted edit. Back up and repair
   the reported DATA file while the server is stopped, then restart to re-enable
   saving. To deliberately start fresh, move the backed-up file out of DATA
   before restarting; check both filename spellings if both exist.
 - A shutdown before initialization, invalid runtime spawn data, or serialization
   failure also skips writing. Write failures are reported without a success
-  message. Writes are not atomic backups: crashes, disk failures, and external
-  edits made while the server is running are not protected by this validation.
+  message. An immediate save failure keeps the accepted edit in memory and warns
+  its admin; the next successful edit or clean shutdown can retry saving. Empty
+  removals, non-admin requests, unrelated chat and event cancellation do not
+  trigger writes. Writes are not atomic backups: crashes, disk failures, and
+  external edits made while the server is running are not protected by this validation.
 
 ## Interaction and event lifecycle
 
@@ -81,7 +87,9 @@ API doubles. It covers authorization, stale/repeated requests, client/server
 message ordering, event completion and cleanup, missing spawn configuration,
 and admin spawn editing. Persistence tests also cover invalid decoded structures,
 sparse native Vectors, intentionally empty lists, file-name precedence,
-read/serialization/write failures, and preservation after a rejected load.
+read/serialization/write failures, immediate persistence of all four spawn
+commands, session-only warnings, shutdown retry, and preservation after a
+rejected load.
 Only in-memory file/codec doubles and test fixtures are used; the tests never
 read or write a server's DATA directory. They exercise the addon at the codec
 boundary, not Garry's Mod's actual JSON parser or filesystem.
@@ -103,8 +111,9 @@ in-game check. Suggested multiplayer smoke test:
    resumes without a victory notice. Repeat with the admin `!stopEvent` command.
 5. On an unconfigured map, add both spawn types, remove their final positions,
    and re-add them. Confirm there are no Lua errors or duplicate map entries.
-6. Restart the server cleanly and check that edited spawn positions reload from
-   `devonsspawninfo.json`, including on a case-sensitive Linux server.
+6. On a disposable server, add/remove each spawn type and check that
+   `devonsspawninfo.json` changes before shutdown. Restart and confirm the edited
+   positions reload, including on a case-sensitive Linux server.
 7. On a disposable server with a backup, try malformed saved JSON. Confirm the
    configured positions work, a warning appears, and shutdown leaves the bad
    file unchanged even after admin edits. Repair the file while stopped and
@@ -113,8 +122,7 @@ in-game check. Suggested multiplayer smoke test:
 
 ## Remaining follow-ups
 
-- Consider saving admin edits immediately and using an atomic/backup write flow;
-  current saving still runs only on clean shutdown
+- Consider an atomic/backup write flow to protect against interrupted writes
 - Exercise live Lua hot-reload during an active encounter; local round state is
   intentionally not persisted across script reloads
 - Check the existing full-screen dialogue layout at different resolutions and

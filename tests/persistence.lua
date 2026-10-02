@@ -79,7 +79,7 @@ return function(gmod, test, eq)
         env.fire("PlayerSay", ply, "!removeEnemySpawn")
         eq(data[4].enemySpawnPositions[11], nil)
         eq(data[4].enemySpawnPositions[10].x, 1)
-        env.fire("ShutDown"); eq(state.encoded, data); eq(#state.writes, 1)
+        env.fire("ShutDown"); eq(state.encoded, data); eq(#state.writes, 3, "two admin edits and shutdown each save")
     end)
     test("historical mixed-case file loads only when canonical file is absent", function()
         local env=gmod.new(); local data=valid(env); local state=storage(env, {[legacy]="legacy bytes"}, data)
@@ -177,4 +177,71 @@ return function(gmod, test, eq)
             assert(#env.errors > 0)
         end)
     end
+    for _, kind in ipairs({"Activator", "Enemy"}) do
+        for _, operation in ipairs({"set", "remove"}) do
+            test(operation .. " " .. kind .. " spawn saves immediately without waiting for shutdown", function()
+                local env=gmod.new(); local state=storage(env); env.fire("Initialize")
+                local admin=env.entity("player"); admin.admin=true; admin:SetPos(env.Vector(9,8,7))
+                local key=kind == "Activator" and "activatorSpawnPositions" or "enemySpawnPositions"
+                env.fire("PlayerSay", admin, "!" .. operation .. kind .. "Spawn")
+                eq(#state.writes, 1, "persist the accepted edit before shutdown")
+                eq(state.writes[1].path, canonical); eq(state.encoded, env.SpawnPositions)
+                eq(#env.SpawnPositions[1][key], operation == "set" and 4 or 2)
+                if operation == "set" then eq(state.encoded[1][key][4], admin:GetPos()) end
+                eq(#admin.chats, 1); assert(not admin.chats[1]:find("in memory only", 1, true))
+            end)
+        end
+    end
+    for _, failure in ipairs({"writeFails", "writeError", "encodeError", "encodeFails", "encodeEmpty"}) do
+        test("admin edit reports " .. failure .. " without losing the in-memory change", function()
+            local env=gmod.new(); local state=storage(env); env.fire("Initialize"); state[failure]=true
+            local admin=env.entity("player"); admin.admin=true
+            env.fire("PlayerSay", admin, "!setEnemySpawn")
+            eq(#env.SpawnPositions[1].enemySpawnPositions, 4)
+            eq(#admin.chats, 1); assert(admin.chats[1]:find("in memory only", 1, true), "explain that persistence failed")
+            assert(#env.errors > 0); eq(state.files[canonical], nil)
+        end)
+    end
+    test("admin edit after rejected load keeps the file and explains disabled saving", function()
+        local env=gmod.new(); local state=storage(env, {[canonical]="recoverable"}); env.fire("Initialize")
+        local admin=env.entity("player"); admin.admin=true
+        env.fire("PlayerSay", admin, "!setEnemySpawn")
+        eq(#state.writes, 0); eq(state.files[canonical], "recoverable")
+        assert(admin.chats[1]:find("in memory only", 1, true))
+    end)
+    test("admin edit before initialization is session-only and never writes", function()
+        local env=gmod.new(); local state=storage(env, {[canonical]="recoverable"})
+        local admin=env.entity("player"); admin.admin=true
+        env.fire("PlayerSay", admin, "!setActivatorSpawn")
+        eq(#state.writes, 0); eq(state.files[canonical], "recoverable")
+        assert(admin.chats[1]:find("in memory only", 1, true))
+    end)
+    test("non-admin, unrelated, empty-removal and stop commands do not trigger writes", function()
+        local env=gmod.new(); local state=storage(env); env.fire("Initialize")
+        local player=env.entity("player")
+        env.fire("PlayerSay", player, "!setEnemySpawn")
+        player.admin=true; env.SpawnPositions={}
+        for _, command in ipairs({"hello", "!removeEnemySpawn", "!removeActivatorSpawn", "!stopEvent"}) do
+            env.fire("PlayerSay", player, command)
+        end
+        eq(#state.writes, 0); eq(state.encoded, nil)
+    end)
+    test("shutdown retries a failed immediate save using the current edits", function()
+        local env=gmod.new(); local state=storage(env); env.fire("Initialize"); state.writeFails=true
+        local admin=env.entity("player"); admin.admin=true
+        env.fire("PlayerSay", admin, "!setEnemySpawn"); eq(#state.writes, 1)
+        state.writeFails=false; env.fire("ShutDown")
+        eq(#state.writes, 2); eq(state.encoded, env.SpawnPositions)
+        eq(#state.encoded[1].enemySpawnPositions, 4); assert(state.files[canonical])
+    end)
+
+    for _, initialized in ipairs({false, true}) do
+        test("shutdown save never stops other addon hooks when initialized=" .. tostring(initialized), function()
+            local env=gmod.new(); local state=storage(env)
+            if initialized then env.fire("Initialize") end
+            eq(env.hooks.ShutDown.saveTheTables(), nil, "GMod stops hook dispatch on any non-nil return")
+            eq(#state.writes, initialized and 1 or 0)
+        end)
+    end
+
 end

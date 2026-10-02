@@ -185,6 +185,15 @@ end
 
 util.AddNetworkString("entitiesDeleted")
 
+-- The save routine is assigned below before any chat command can run.
+local saveSpawnPositions
+local function confirmSpawnEdit(sender, message)
+    if not saveSpawnPositions() then
+        message = message .. " This change is in memory only; saving failed or is disabled. Check the server console."
+    end
+    sender:ChatPrint(message)
+end
+
 -- Function that allows admins to modify spawn positions in game.
 hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if not sender:IsAdmin() then return end
@@ -216,13 +225,13 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
         end
         local positions = information[command[1]]
         positions[table.maxn(positions) + 1] = sender:GetPos()
-        sender:ChatPrint("New " .. command[2] .. " Spawn Successfully Set at " .. tostring(sender:GetPos()) .. ".")
+        confirmSpawnEdit(sender, "New " .. command[2] .. " Spawn Successfully Set at " .. tostring(sender:GetPos()) .. ".")
     else
         local positions = information and information[command[1]]
         local last = positions and table.maxn(positions) or 0
         if last > 0 then
             positions[last] = nil
-            sender:ChatPrint("The previous " .. command[2] .. " spawn was successfully removed.")
+            confirmSpawnEdit(sender, "The previous " .. command[2] .. " spawn was successfully removed.")
         else
             sender:ChatPrint("There are no more " .. command[2] .. " spawns to remove.")
         end
@@ -278,26 +287,31 @@ local function readSpawnData()
 end
 
 -- Only save after initialization has established that existing data is safe.
-hook.Add("ShutDown", "saveTheTables", function()
+saveSpawnPositions = function()
     if not canSaveSpawnPositions then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Spawn saving is disabled; existing data was left untouched.\n")
-        return
+        return false
     end
     if not validSpawnPositions(SpawnPositions) then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Invalid current spawn positions; existing data was left untouched.\n")
-        return
+        return false
     end
     local encoded, converted = pcall(util.TableToJSON, SpawnPositions)
     if not encoded or type(converted) ~= "string" or converted == "" then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not serialize spawn positions; existing data was left untouched.\n")
-        return
+        return false
     end
     local written, success = pcall(file.Write, spawnDataFile, converted)
     if not written or success ~= true then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not save spawn positions to " .. spawnDataFile .. ".\n")
-        return
+        return false
     end
     print("DEVONS ROLEPLAY ADDON - The spawn positions table was successfully saved")
+    return true
+end
+
+hook.Add("ShutDown", "saveTheTables", function()
+    saveSpawnPositions() -- Do not return its status and stop other addons' hooks.
 end)
 
 hook.Add("Initialize", "loadTheTables", function()
