@@ -1,6 +1,7 @@
 include("shared.lua")
 
 local activeFrame
+local activeAlertFrame
 
 -- Draws the NPC model and the text
 function ENT:Draw()
@@ -102,8 +103,12 @@ end)
 
 net.Receive("roundFinished", function()
 
+    -- Replacing the named timer must not strand its previous popup.
+    if IsValid(activeAlertFrame) then activeAlertFrame:Close() end
+
     -- Creates the initial pop-up menu
     local alertFrame = vgui.Create("DFrame")
+    activeAlertFrame = alertFrame
     alertFrame:SetDeleteOnClose(true)
     alertFrame:SetSize(ScrW(), 100)
     alertFrame:SetPos(0, 0)
@@ -127,11 +132,12 @@ net.Receive("roundFinished", function()
     alertText:DockMargin((ScrW()/2) - 210, 0, 0, 18)
 
     -- Destroys the alert frame after 5 seconds
-    timer.Create("destroyAlertFrame", 5, 0, function()
+    timer.Create("destroyAlertFrame", 5, 1, function()
         
-        if(alertFrame:IsValid()) then
+        if IsValid(alertFrame) then
             alertFrame:Close()
         end
+        if activeAlertFrame == alertFrame then activeAlertFrame = nil end
 
     end)
 

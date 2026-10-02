@@ -68,7 +68,8 @@ Back up the existing spawn data before testing changes.
 - Only NPCs actually spawned for the active event affect its count. World/NPC
   kills are supported. A victory notice is sent once, only if all tracked
   enemies were killed. Cleanup/removal and admin cancellation restart spawning
-  without announcing a victory.
+  without announcing a victory. The completion popup closes after five seconds;
+  a newer completion replaces it and restarts that one-shot dismissal.
 - Missing/empty spawn lists safely pause spawning. Missing enemy spawns leave
   existing activators available so an admin can add positions and retry.
 
@@ -85,7 +86,7 @@ texlua tests/run.lua
 The suite runs the actual addon Lua in isolated environments with Garry's Mod
 API doubles. It covers authorization, stale/repeated requests, client/server
 message ordering, event completion and cleanup, missing spawn configuration,
-and admin spawn editing. Persistence tests also cover invalid decoded structures,
+admin spawn editing, and completion-popup replacement/one-shot cleanup. Persistence tests also cover invalid decoded structures,
 sparse native Vectors, intentionally empty lists, file-name precedence,
 read/serialization/write failures, immediate persistence of all four spawn
 commands, session-only warnings, shutdown retry, and preservation after a
@@ -106,7 +107,9 @@ in-game check. Suggested multiplayer smoke test:
 2. Have two players open activators; start from one. The other player's stale
    menu must not create another event. Repeat after dying and respawning.
 3. Kill enemies with player weapons and world damage. Confirm one completion
-   notice and the next activator batch after the configured delay.
+   notice that disappears after five seconds, and the next activator batch after
+   the configured delay. With short event delays, finish two rounds quickly and
+   confirm only the latest completion popup remains.
 4. Remove an enemy with a cleanup tool, then kill the rest. Confirm spawning
    resumes without a victory notice. Repeat with the admin `!stopEvent` command.
 5. On an unconfigured map, add both spawn types, remove their final positions,
@@ -125,5 +128,4 @@ in-game check. Suggested multiplayer smoke test:
 - Consider an atomic/backup write flow to protect against interrupted writes
 - Exercise live Lua hot-reload during an active encounter; local round state is
   intentionally not persisted across script reloads
-- Check the existing full-screen dialogue layout at different resolutions and
-  the completion popup's repeating cleanup timer in the real client
+- Check the existing full-screen dialogue layout at different resolutions
