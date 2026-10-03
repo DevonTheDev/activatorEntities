@@ -68,25 +68,63 @@ function M.new(client)
     function env.isvector(value) return type(value) == "table" and getmetatable(value) == vector end
     function vector.__add(a, b) return env.Vector(a.x+b.x, a.y+b.y, a.z+b.z) end
     function vector:DistToSqr(other) return (self.x-other.x)^2+(self.y-other.y)^2+(self.z-other.z)^2 end
-    env.util = {AddNetworkString = function() end}
+    env.networkStrings = {}
+    env.util = {AddNetworkString = function(name) env.networkStrings[name] = true end}
     env.file = {Read = function() end, Write = function() end}
     env.game = {GetMap = function() return env.map end}
     env.net = {}
     function env.net.Receive(name, callback) env.receivers[name] = callback end
-    function env.net.Start(name) env.outgoing = {name = name, values = {}} end
-    function env.net.WriteEntity(value) table.insert(env.outgoing.values, value) end
-    env.net.WriteString = env.net.WriteEntity
+    function env.net.Start(name, unreliable)
+        env.outgoing = {name=name, values={}, fields={}, unreliable=unreliable == true}
+    end
+    local function write(kind, value, bits)
+        table.insert(env.outgoing.values, value)
+        table.insert(env.outgoing.fields, {kind=kind, bits=bits})
+    end
+    function env.net.WriteEntity(value) write("entity", value) end
+    function env.net.WriteString(value) assert(type(value) == "string"); write("string", value) end
+    function env.net.WriteBool(value) assert(type(value) == "boolean"); write("bool", value) end
+    function env.net.WriteUInt(value, bits)
+        assert(type(bits) == "number" and bits >= 1 and bits <= 32)
+        assert(type(value) == "number" and value >= 0 and value < 2 ^ bits and value % 1 == 0)
+        write("uint", value, bits)
+    end
     function env.net.Send(ply)
         env.outgoing.player = ply
         table.insert(env.messages, env.outgoing)
         env.outgoing = nil
     end
+    function env.net.Broadcast()
+        env.outgoing.broadcast = true
+        env.net.Send(env.player.GetAll())
+    end
     function env.net.SendToServer() env.net.Send("server") end
-    local function read() return table.remove(env.incoming, 1) end
-    env.net.ReadEntity, env.net.ReadString = read, read
+    local function read(kind, bits)
+        env.netReads = (env.netReads or 0) + 1
+        if env.incomingFields then
+            local field = assert(table.remove(env.incomingFields, 1), "read past the message fields")
+            assert(field.kind == kind, "network field type mismatch")
+            assert(field.bits == bits, "network field bit width mismatch")
+        end
+        return table.remove(env.incoming, 1)
+    end
+    function env.net.ReadEntity() return read("entity") end
+    function env.net.ReadString() return read("string") end
+    function env.net.ReadBool() return read("bool") end
+    function env.net.ReadUInt(bits) return read("uint", bits) end
     function env.receive(name, sender, ...)
-        env.incoming = {...}
+        env.incoming, env.incomingFields = {...}, nil
         assert(env.receivers[name], "Missing receiver: " .. name)(0, sender)
+    end
+    -- Transfer a real outgoing message between isolated server/client realms,
+    -- checking reader order/types without pretending to encode engine packets.
+    function env.deliver(message, sender)
+        env.incoming, env.incomingFields = {}, {}
+        for i, value in ipairs(message.values) do env.incoming[i] = value end
+        for i, field in ipairs(message.fields) do env.incomingFields[i] = field end
+        assert(env.receivers[message.name], "Missing receiver: " .. message.name)(0, sender)
+        assert(#env.incoming == 0 and #env.incomingFields == 0, "message fields left unread")
+        env.incomingFields = nil
     end
     function env.messageCount(name)
         local count = 0
@@ -171,20 +209,39 @@ function M.new(client)
     end
     if client then
         env.panels = {}
-        env.ScrW, env.ScrH = function() return 1920 end, function() return 1080 end
+        env.screenWidth, env.screenHeight = 1920, 1080
+        env.ScrW, env.ScrH = function() return env.screenWidth end, function() return env.screenHeight end
         env.vgui = {}
         function env.vgui.Create(class, parent)
-            local panel = {valid=true, class=class, parent=parent, children={}}
+            local panel = {valid=true, class=class, parent=parent, children={}, visible=true, x=0, y=0, width=0, height=0}
             if parent then table.insert(parent.children, panel) end
-            for _, method in ipairs({"SetVisible", "SetTitle", "SetSize", "Center", "MakePopup", "SetBackgroundBlur", "SetDeleteOnClose", "ShowCloseButton", "SetFont", "SetColor", "Dock", "DockMargin", "SetPos", "SetModel", "SetFOV", "SetCamPos", "SetPaintShadow"}) do panel[method]=function() end end
+            for _, method in ipairs({"SetTitle", "SetBackgroundBlur", "SetDeleteOnClose", "ShowCloseButton", "SetFont", "SetColor", "Dock", "DockMargin", "DockPadding", "SetModel", "SetFOV", "SetCamPos", "SetPaintShadow", "SizeToContents", "SetContentAlignment", "SetTextColor", "SetWrap"}) do panel[method]=function() end end
             function panel:SetText(value) self.text=value end
-            function panel:GetTall() return 1080 end
+            function panel:SetVisible(value) self.visible=value end
+            function panel:IsVisible() return self.valid and self.visible end
+            function panel:SetSize(width, height) self.width, self.height=width, height end
+            function panel:SetWide(value) self.width=value end
+            function panel:SetTall(value) self.height=value end
+            function panel:GetWide() return self.width end
+            function panel:GetTall() return self.height end
+            function panel:SetPos(x, y) self.x, self.y=x, y; self.positionChanges=(self.positionChanges or 0)+1 end
+            function panel:GetPos() return self.x, self.y end
+            function panel:GetX() return self.x end
+            function panel:GetY() return self.y end
+            function panel:Center() self:SetPos((env.ScrW()-self.width)/2, (env.ScrH()-self.height)/2) end
+            function panel:MakePopup() self.popup=true end
+            function panel:SetMouseInputEnabled(value) self.mouseInput=value end
+            function panel:SetKeyboardInputEnabled(value) self.keyboardInput=value end
+            function panel:SetFraction(value) self.fraction=value end
             function panel:GetCamPos() return env.Vector(0,0,0) end
             function panel:IsValid() return self.valid end
+            function panel:Remove()
+                self.valid=false
+                for _, child in ipairs(self.children) do child:Remove() end
+            end
             function panel:Close()
                 if self.OnClose then self:OnClose() end
-                self.valid=false
-                for _, child in ipairs(self.children) do child.valid=false end
+                self:Remove()
             end
             table.insert(env.panels, panel)
             return panel

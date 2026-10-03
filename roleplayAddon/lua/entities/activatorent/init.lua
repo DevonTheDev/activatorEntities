@@ -8,6 +8,8 @@ util.AddNetworkString("OpenInteractionMenu")
 util.AddNetworkString("CloseInteractionMenu")
 util.AddNetworkString("SendNPCInformation")
 util.AddNetworkString("roundFinished")
+util.AddNetworkString("ActivatorEventStatus")
+util.AddNetworkString("RequestActivatorEventStatus")
 
 activatorCount = 0
 totalEnemies = 0
@@ -16,8 +18,37 @@ local interactions = {}
 local activeEnemies = {}
 local eventActive = false
 local eventInterrupted = false
+local activeEventName
+local initialEnemies = 0
+local statusRequestAfter = {}
 local interactionLifetime = 60
 local interactionDistanceSquared = 200 * 200
+
+-- Observers receive only this server's current encounter state.
+local function sendEventStatus(recipient)
+    local active = eventActive and totalEnemies > 0
+    net.Start("ActivatorEventStatus")
+        net.WriteBool(active)
+        if active then
+            net.WriteString(activeEventName)
+            net.WriteUInt(totalEnemies, 32)
+            net.WriteUInt(initialEnemies, 32)
+            net.WriteBool(eventInterrupted)
+        end
+    net.Send(recipient or player.GetAll())
+end
+
+-- A ready-client handshake also covers players joining during an encounter.
+net.Receive("RequestActivatorEventStatus", function(_, ply)
+    if not IsValid(ply) or not ply:IsPlayer() then return end
+    local now = CurTime()
+    if statusRequestAfter[ply] and now < statusRequestAfter[ply] then return end
+    statusRequestAfter[ply] = now + 1
+    sendEventStatus(ply)
+end)
+hook.Add("PlayerDisconnected", "clearActivatorStatusRequest", function(ply)
+    statusRequestAfter[ply] = nil
+end)
 
 local function canInteract(ply, ent)
     return IsValid(ply) and ply:IsPlayer() and ply:Alive()
@@ -79,7 +110,10 @@ local function finishEvent(completed)
     eventActive = false
     activeEnemies = {}
     totalEnemies = 0
+    initialEnemies = 0
+    activeEventName = nil
     timer.Start("activatorSpawner")
+    sendEventStatus()
     if completed then
         net.Start("roundFinished")
         net.Send(player.GetAll())
@@ -114,6 +148,7 @@ net.Receive("SendNPCInformation", function(_, ply)
 
     eventActive = true
     eventInterrupted = false
+    activeEventName = identifier
     timer.Stop("activatorSpawner")
     destroyActivators()
     for i = 1, math.floor(info.maxNPCs) do
@@ -135,6 +170,8 @@ net.Receive("SendNPCInformation", function(_, ply)
         ErrorNoHalt("ERROR - No event enemies could be spawned\n")
         return
     end
+    initialEnemies = totalEnemies
+    sendEventStatus()
     for _, player in pairs(player.GetAll()) do
         player:ChatPrint(totalEnemies .. " enemies have been spawned. Eliminate them.")
     end
@@ -168,6 +205,7 @@ hook.Add("OnNPCKilled", "checkForOurEntities", function(npc, attacker)
     activeEnemies[npc] = nil
     totalEnemies = totalEnemies - 1
     if totalEnemies == 0 then finishEvent(not eventInterrupted) return end
+    sendEventStatus()
 
     local message = "An enemy was eliminated. "
     if IsValid(attacker) and attacker:IsPlayer() then
@@ -184,7 +222,8 @@ hook.Add("EntityRemoved", "clearRemovedEventEntities", function(ent)
         eventInterrupted = true
         activeEnemies[ent] = nil
         totalEnemies = totalEnemies - 1
-        if totalEnemies == 0 then finishEvent(false) end
+        if totalEnemies == 0 then finishEvent(false)
+        else sendEventStatus() end
     elseif ent:GetClass() == "activatorent" and not eventActive then
         timer.Start("activatorSpawner")
     end

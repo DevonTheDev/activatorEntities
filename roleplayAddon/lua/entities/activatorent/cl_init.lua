@@ -150,3 +150,68 @@ net.Receive("entitiesDeleted", function()
     end
 
 end)
+
+-- A read-only encounter panel; it never opens a cursor or captures input.
+local progressPanel, progressTitle, progressCount, progressBar, progressWarning
+
+local function clearEventProgress()
+    if IsValid(progressPanel) then progressPanel:Remove() end
+    progressPanel, progressTitle, progressCount, progressBar, progressWarning = nil, nil, nil, nil, nil
+end
+
+local function layoutEventProgress()
+    if not IsValid(progressPanel) then return end
+    local width = math.min(360, ScrW() - 32)
+    progressPanel:SetSize(width, 116)
+    progressPanel:SetPos(ScrW() - width - 16, 16)
+    progressTitle:SetPos(12, 8)
+    progressTitle:SetSize(width - 24, 36)
+    progressCount:SetPos(12, 46)
+    progressCount:SetSize(width - 24, 20)
+    progressBar:SetPos(12, 72)
+    progressBar:SetSize(width - 24, 10)
+    progressWarning:SetPos(12, 88)
+    progressWarning:SetSize(width - 24, 22)
+end
+
+net.Receive("ActivatorEventStatus", function()
+    if not net.ReadBool() then clearEventProgress() return end
+    local name = net.ReadString()
+    local remaining = net.ReadUInt(32)
+    local initial = net.ReadUInt(32)
+    local interrupted = net.ReadBool()
+    if initial < 1 or remaining < 1 or remaining > initial then
+        clearEventProgress()
+        return
+    end
+    if not IsValid(progressPanel) then
+        progressPanel = vgui.Create("DPanel")
+        progressPanel:SetMouseInputEnabled(false)
+        progressPanel:SetKeyboardInputEnabled(false)
+        progressPanel.Paint = function(_, w, h)
+            draw.RoundedBox(6, 0, 0, w, h, Color(20, 20, 20, 210))
+        end
+        progressTitle = vgui.Create("DLabel", progressPanel)
+        progressTitle:SetFont("DermaDefaultBold")
+        progressTitle:SetColor(Color(255, 255, 255, 255))
+        progressTitle:SetWrap(true)
+        progressCount = vgui.Create("DLabel", progressPanel)
+        progressCount:SetFont("DermaDefault")
+        progressCount:SetColor(Color(225, 225, 225, 255))
+        progressBar = vgui.Create("DProgress", progressPanel)
+        progressWarning = vgui.Create("DLabel", progressPanel)
+        progressWarning:SetFont("DermaDefault")
+        progressWarning:SetColor(Color(255, 190, 100, 255))
+    end
+    progressTitle:SetText(name)
+    progressCount:SetText("Hostiles remaining: " .. remaining .. " / " .. initial)
+    progressBar:SetFraction(remaining / initial)
+    progressWarning:SetText(interrupted and "Encounter interrupted by a removal" or "")
+    layoutEventProgress()
+end)
+
+hook.Add("OnScreenSizeChanged", "layoutActivatorEventProgress", layoutEventProgress)
+hook.Add("InitPostEntity", "requestActivatorEventProgress", function()
+    net.Start("RequestActivatorEventStatus")
+    net.SendToServer()
+end)

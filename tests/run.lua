@@ -312,5 +312,6 @@ test("manually spawning with missing event definitions removes the unusable acti
     ent:Spawn(); eq(ent.valid, false)
 end)
 dofile("tests/persistence.lua")(gmod, test, eq)
+dofile("tests/progress.lua")(gmod, test, eq)
 print(string.format("%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

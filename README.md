@@ -76,6 +76,25 @@ Back up the existing spawn data before testing changes.
 - Missing/empty spawn lists safely pause spawning. Missing enemy spawns leave
   existing activators available so an admin can add positions and retry.
 
+## Encounter progress
+
+During an active encounter, a small panel in the upper-right corner shows its
+configured name and how many hostiles remain out of the number actually spawned.
+The bar represents the fraction remaining. Counts update when tracked enemies
+are killed or removed; unrelated NPCs do not affect it. Removal without a kill
+also shows an interruption warning, matching the existing rule that an
+interrupted encounter cannot award the victory notice.
+
+The panel clears when the encounter ends or an admin stops it. It never captures
+the cursor or keyboard and does not replace the existing chat or completion
+notice. Players joining mid-encounter request the current server snapshot after
+the client's `InitPostEntity` ready hook. Snapshot requests are read-only and
+limited to one per player per second; there is no periodic polling.
+
+This display uses server-owned event state and does not change spawns, health,
+starting permissions or completion rules. Live Lua hot-reload remains outside
+the supported encounter lifecycle.
+
 ## Regression tests
 
 From the repository root, run either:
@@ -95,6 +114,10 @@ sparse native Vectors, intentionally empty lists, file-name precedence,
 read/serialization/write failures, immediate persistence of all four spawn
 commands, session-only warnings, shutdown retry, and preservation after a
 rejected load.
+Encounter-progress tests also cover actual spawned counts, every end path,
+unrelated/repeated NPC callbacks, late-join snapshots, request throttling and the
+client panel's update/clear/resize and input settings. Synthetic cross-realm
+delivery checks the protocol fields without claiming real engine networking.
 Only in-memory file/codec doubles and test fixtures are used; the tests never
 read or write a server's DATA directory. They exercise the addon at the codec
 boundary, not Garry's Mod's actual JSON parser or filesystem.
@@ -128,6 +151,10 @@ in-game check. Suggested multiplayer smoke test:
    file unchanged even after admin edits. Repair the file while stopped and
    restart; confirm loading and saving resume. Check the mixed-case fallback
    separately with the lowercase file absent.
+9. Start an event and confirm its passive progress panel updates after each
+   tracked kill. Join from another client mid-event, remove a tracked enemy to
+   check the interruption warning, and stop the event. Check the panel clears
+   and never takes keyboard or mouse control, including after a resolution change.
 
 ## Remaining follow-ups
 
