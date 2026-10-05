@@ -137,7 +137,10 @@ function M.new(client)
         env.hooks[event][name] = callback
     end
     function env.fire(event, ...)
-        for _, callback in pairs(env.hooks[event] or {}) do callback(...) end
+        for _, callback in pairs(env.hooks[event] or {}) do
+            local result = callback(...)
+            if result ~= nil then return result end
+        end
     end
     env.timer = {}
     function env.timer.Create(name, delay, repetitions, callback)
@@ -164,6 +167,7 @@ function M.new(client)
         local ent = {valid=true, class=class, name="", pos=env.Vector(0,0,0), chats={}}
         function ent:IsPlayer() return self.class == "player" end
         function ent:GetClass() return self.class end
+        function ent:IsMarkedForDeletion() return self.markedForDeletion == true end
         function ent:GetName() return self.name end
         function ent:SetName(value) self.name = value end
         function ent:GetPos() return self.pos end
@@ -181,11 +185,16 @@ function M.new(client)
             if self.Initialize then self:Initialize() end
             self.spawned = true
         end
-        function ent:Remove()
+        function ent:FinishRemoval()
             if not self.valid then return end
             if self.OnRemove then self:OnRemove() end
             env.fire("EntityRemoved", self)
             self.valid = false
+        end
+        function ent:Remove()
+            if not self.valid or self.markedForDeletion then return end
+            self.markedForDeletion = true
+            if not env.deferRemoval then self:FinishRemoval() end
         end
         function ent:Alive() return self.alive ~= false end
         function ent:Nick() return "Test player" end
@@ -193,6 +202,11 @@ function M.new(client)
         if class == "activatorent" then setmetatable(ent, {__index=env.ENT}) end
         table.insert(env.entities, ent)
         return ent
+    end
+    function env.flushRemovals()
+        for _, ent in ipairs(env.entities) do
+            if ent.markedForDeletion and ent.valid then ent:FinishRemoval() end
+        end
     end
     function env.ents.Create(class)
         if env.failClass == class then return {valid=false} end

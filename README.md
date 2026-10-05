@@ -18,10 +18,40 @@ Admin chat commands:
 - `!setActivatorSpawn` / `!setEnemySpawn`: add your current position for this map
 - `!removeActivatorSpawn` / `!removeEnemySpawn`: remove the last position
 - `!stopEvent`: remove the current event's enemies and restart the spawn delay
+- `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
+- `!clearNextEvent`: clear that pending choice
+- `!eventStatus`: inspect the active encounter, ready activators and pending choice
 
 Accepted spawn additions/removals are saved immediately to the DATA directory,
 with another save on clean server shutdown. Positions load on initialization.
 Back up the existing spawn data before testing changes.
+
+### Choose the next encounter
+
+For example, `!nextEvent Raid` selects the configured `Raid` encounter. Use the
+entry's `name` from `NPCEdits` to choose among configured encounters. Names
+match exactly, including case and spaces; unknown or duplicate names are
+rejected without losing an existing pending choice. A later valid selection
+replaces the one pending slot. This choice lasts only for the current server
+session and is not written into spawn data.
+
+The choice waits for a normal timed spawn with no active encounter or existing
+usable activators. It respects player requirements, spawn positions, delay and
+capacity. It is consumed only after an activator successfully appears; failed
+attempts leave it pending. Automatic refills keep the chosen name while that
+selected batch still has its own activators. Manually spawned actors do not
+consume a pending choice or keep a departed selected batch alive.
+
+Queueing or clearing does not replace ready actors, interrupt an encounter or
+start one automatically. Players still use an activator and pass the existing
+server checks. `!clearNextEvent` clears only the future choice, so it does not
+change a selected batch already waiting on the map. `!stopEvent` leaves the
+future choice intact. If a selected definition becomes unavailable, it is
+reported as unavailable rather than silently replaced with a random choice.
+
+`!eventStatus` reports a snapshot of the actual current state, including mixed
+ready encounter names where applicable. It does not choose a random event,
+restart a timer, change permissions, or save data.
 
 ### Saved spawn data and recovery
 
@@ -118,12 +148,19 @@ Encounter-progress tests also cover actual spawned counts, every end path,
 unrelated/repeated NPC callbacks, late-join snapshots, request throttling and the
 client panel's update/clear/resize and input settings. Synthetic cross-realm
 delivery checks the protocol fields without claiming real engine networking.
+Encounter-selection tests cover administrator permissions, exact and duplicate
+names, pending replacement/clear, partial and failed spawning, selected-batch
+refills, manual actors, deferred removal and current/future ownership. They also
+check that status and selection commands leave timers, RNG, persistence and
+encounter messages alone, and preserve the normal client/server start path.
 Only in-memory file/codec doubles and test fixtures are used; the tests never
 read or write a server's DATA directory. They exercise the addon at the codec
 boundary, not Garry's Mod's actual JSON parser or filesystem.
 
 The suite exits nonzero on failure. The harness supports Lua
 5.1 and newer; its small source adapter translates GLua operators/comments.
+This pass was checked in Lua 5.3 via `texlua`, plus Lua 5.1 and LuaJIT 2.1
+through Lupa 2.6.
 
 These tests do **not** run the Garry's Mod engine. NPC behavior, entity networking,
 Derma layout, real timer timing, and saved Vector JSON round-trips still need an
@@ -155,6 +192,11 @@ in-game check. Suggested multiplayer smoke test:
    tracked kill. Join from another client mid-event, remove a tracked enemy to
    check the interruption warning, and stop the event. Check the panel clears
    and never takes keyboard or mouse control, including after a resolution change.
+10. Configure a second named encounter. Queue it with `!nextEvent`, inspect it
+    with `!eventStatus`, and verify the next fresh batch uses it. Queue another
+    choice while actors are ready or an event is active; confirm those actors
+    stay unchanged. Remove one selected actor and check its refill, then clear
+    the future choice and finish normally. Try these commands as a non-admin.
 
 ## Remaining follow-ups
 
