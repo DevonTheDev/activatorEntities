@@ -16,6 +16,7 @@ totalEnemies = 0
 
 local interactions = {}
 local activeEnemies = {}
+local constructingEnemies
 local eventActive = false
 local eventInterrupted = false
 local activeEventName
@@ -332,6 +333,7 @@ function destroyActivators()
 end
 
 local function finishEvent(completed)
+    constructingEnemies = nil
     eventActive = false
     activeEnemies = {}
     totalEnemies = 0
@@ -343,6 +345,14 @@ local function finishEvent(completed)
         net.Start("roundFinished")
         net.Send(player.GetAll())
     end
+end
+
+-- Callback boundaries can retire this exact event and start a replacement.
+-- The in-flight NPC is not yet tracked, so its old constructor must remove it.
+local function ownsConstruction(enemies, enemy)
+    if eventActive and activeEnemies == enemies then return true end
+    if IsValid(enemy) then enemy:Remove() end
+    return false
 end
 
 -- Used by the admin command; clear ownership before removal callbacks fire.
@@ -372,34 +382,48 @@ net.Receive("SendNPCInformation", function(_, ply)
     if type(info.maxNPCs) ~= "number" or info.maxNPCs < 1 or info.maxNPCs == math.huge then return end
 
     clearSelectedBatch()
+    local enemies = activeEnemies
+    constructingEnemies = enemies
     eventActive = true
     eventInterrupted = false
     activeEventName = identifier
     timer.Stop("activatorSpawner")
     destroyActivators()
+    if not ownsConstruction(enemies) then return end
     for i = 1, math.floor(info.maxNPCs) do
         local enemy = ents.Create(info.npcPath)
+        if not ownsConstruction(enemies, enemy) then return end
         if IsValid(enemy) then
             spawnPosition = spawnPosition + Vector(30, 30, 0)
             enemy:SetPos(spawnPosition)
+            if not ownsConstruction(enemies, enemy) then return end
             enemy:SetName("devonsSpawnedEntity")
+            if not ownsConstruction(enemies, enemy) then return end
             enemy:Spawn()
+            if not ownsConstruction(enemies, enemy) then return end
             if IsValid(enemy) then
-                enemy:SetHealth(returnEnemyHealth())
-                activeEnemies[enemy] = true
-                totalEnemies = totalEnemies + 1
+                local health = returnEnemyHealth()
+                if not ownsConstruction(enemies, enemy) then return end
+                enemy:SetHealth(health)
+                if not ownsConstruction(enemies, enemy) then return end
+                if IsValid(enemy) then
+                    enemies[enemy] = true
+                    totalEnemies = totalEnemies + 1
+                    initialEnemies = initialEnemies + 1
+                end
             end
         end
     end
-    if totalEnemies == 0 then
+    constructingEnemies = nil
+    if initialEnemies == 0 then
         finishEvent(false)
         ErrorNoHalt("ERROR - No event enemies could be spawned\n")
         return
     end
-    initialEnemies = totalEnemies
+    if totalEnemies == 0 then finishEvent(not eventInterrupted) return end
     sendEventStatus()
     for _, player in pairs(player.GetAll()) do
-        player:ChatPrint(totalEnemies .. " enemies have been spawned. Eliminate them.")
+        player:ChatPrint(initialEnemies .. " enemies have been spawned. Eliminate them.")
     end
 end)
 
@@ -449,6 +473,8 @@ hook.Add("OnNPCKilled", "checkForOurEntities", function(npc, attacker)
     if not eventActive or not activeEnemies[npc] then return end
     activeEnemies[npc] = nil
     totalEnemies = totalEnemies - 1
+    -- A temporary zero during Spawn is not the end of this encounter.
+    if constructingEnemies == activeEnemies then return end
     if totalEnemies == 0 then finishEvent(not eventInterrupted) return end
     sendEventStatus()
 
@@ -467,8 +493,10 @@ hook.Add("EntityRemoved", "clearRemovedEventEntities", function(ent)
         eventInterrupted = true
         activeEnemies[ent] = nil
         totalEnemies = totalEnemies - 1
-        if totalEnemies == 0 then finishEvent(false)
-        else sendEventStatus() end
+        if constructingEnemies ~= activeEnemies then
+            if totalEnemies == 0 then finishEvent(false)
+            else sendEventStatus() end
+        end
     elseif ent:GetClass() == "activatorent" and not eventActive then
         -- EntityRemoved fires before the departing entity becomes invalid.
         refreshSelectedBatch(ent)

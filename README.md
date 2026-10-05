@@ -121,6 +121,15 @@ next normal attempt does.
 - Missing/empty spawn lists safely pause spawning. Missing enemy spawns leave
   existing activators available so an admin can add positions and retry.
 
+If a server callback cancels an encounter during initial spawning, the abandoned
+loop stops creating enemies and requests removal of any enemy it just created.
+It cannot change the progress of a replacement encounter. Tracked kills and
+removals during setup still update that encounter's counts; their progress
+notifications and completion handling wait until construction settles. Explicit
+cancellation still retires the event immediately. The initial count includes
+enemies added and then killed or removed during setup; removal still prevents
+victory.
+
 ## Encounter progress
 
 During an active encounter, a small panel in the upper-right corner shows its
@@ -168,6 +177,11 @@ names, pending replacement/clear, partial and failed spawning, selected-batch
 refills, manual actors, deferred removal and current/future ownership. They also
 check that status and selection commands leave timers, RNG, persistence and
 encounter messages alone, and preserve the normal client/server start path.
+Construction tests deliberately invoke cancellation or tracked kill/removal
+callbacks during another NPC's setup. They cover retired creation loops,
+replacement ownership, initial/remaining counts and postponed completion. These
+are controlled callback tests, not evidence of an ordinary live-server incident;
+native deferred removal is checked separately in the harness.
 Spawn-condition tests distinguish player/capacity limits, selected versus
 pending ownership, missing and sparse map positions, and malformed or ambiguous
 configuration. Repeated status reads are followed by actual source-level spawn
