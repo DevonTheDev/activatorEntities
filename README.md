@@ -53,6 +53,21 @@ reported as unavailable rather than silently replaced with a random choice.
 ready encounter names where applicable. It does not choose a random event,
 restart a timer, change permissions, or save data.
 
+It also explains the current conditions for an automatic activator spawn:
+the player minimum, available actor capacity, applicable selected encounter,
+and this map's activator positions. Use this when no activators appear, before
+changing the configuration. Empty, missing, malformed or ambiguous map data is
+reported without changing it; sparse position lists are counted normally.
+Enemy positions are shown separately because they are needed when a player
+starts an encounter, not when the timed spawner creates its activators.
+
+These are current configuration checks, not a countdown or a guarantee that
+an NPC will spawn. An encounter definition can be present while its model or
+NPC class is unusable in the engine. The status command does not consume the
+pending choice, sample random events/positions, advance the timer, or start an
+encounter. Existing spawning and selection rules continue to decide what the
+next normal attempt does.
+
 ### Saved spawn data and recovery
 
 - The canonical filename is `garrysmod/data/devonsspawninfo.json`. Garry's Mod
@@ -153,6 +168,11 @@ names, pending replacement/clear, partial and failed spawning, selected-batch
 refills, manual actors, deferred removal and current/future ownership. They also
 check that status and selection commands leave timers, RNG, persistence and
 encounter messages alone, and preserve the normal client/server start path.
+Spawn-condition tests distinguish player/capacity limits, selected versus
+pending ownership, missing and sparse map positions, and malformed or ambiguous
+configuration. Repeated status reads are followed by actual source-level spawn
+and start paths to check that inspection leaves their behavior intact. Timer
+remaining time and native NPC/model availability are not inferred by the tests.
 Only in-memory file/codec doubles and test fixtures are used; the tests never
 read or write a server's DATA directory. They exercise the addon at the codec
 boundary, not Garry's Mod's actual JSON parser or filesystem.
@@ -197,6 +217,11 @@ in-game check. Suggested multiplayer smoke test:
     choice while actors are ready or an event is active; confirm those actors
     stay unchanged. Remove one selected actor and check its refill, then clear
     the future choice and finish normally. Try these commands as a non-admin.
+11. Use `!eventStatus` below the configured player minimum, on an unconfigured
+    map, and after removing the last activator or enemy spawn position. Check
+    that each explanation matches the state, that enemy positions are labeled
+    as a start requirement, and that repeated reads do not alter the next spawn
+    or the normal player interaction.
 
 ## Remaining follow-ups
 

@@ -107,6 +107,97 @@ local function selectionHelp(ply)
     if #names == 0 then adminLine(ply, "No event names are configured.") end
 end
 
+-- Status only inspects current inputs; it neither samples nor refreshes state.
+local function finiteStatusNumber(value)
+    return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+end
+
+local function statusListIndex(value)
+    return finiteStatusNumber(value) and value >= 1 and value == math.floor(value)
+end
+
+local function currentStatusMap()
+    if type(SpawnPositions) ~= "table" then return nil, "malformed map data" end
+    local found, matches = nil, 0
+    local map = game.GetMap()
+    for key, information in pairs(SpawnPositions) do
+        if not statusListIndex(key) or type(information) ~= "table"
+            or type(information.map) ~= "string" or information.map == "" then
+            return nil, "malformed map data"
+        end
+        if information.map == map then found, matches = information, matches + 1 end
+    end
+    -- The spawner uses one record, so duplicates cannot be combined or chosen here.
+    if matches > 1 then return nil, "ambiguous map records (" .. matches .. ")" end
+    if not found then return nil, "missing map record" end
+    return found
+end
+
+local function positionStatus(information, reason, field)
+    if not information then return reason end
+    local positions = information[field]
+    if positions == nil then return "missing list" end
+    if type(positions) ~= "table" then return "malformed list" end
+    local count = 0
+    for key, position in pairs(positions) do
+        if not statusListIndex(key) or not isvector(position)
+            or not finiteStatusNumber(position.x) or not finiteStatusNumber(position.y)
+            or not finiteStatusNumber(position.z) then return "malformed list" end
+        count = count + 1
+    end
+    return count == 0 and "empty list" or (count .. " available")
+end
+
+local function spawnDefinitionStatus(count, readyName)
+    local name = readyName or (count == 0 and pendingSelection and pendingSelection.name)
+    if name then
+        local information, reason = selectableEvent(name)
+        return (readyName and "selected batch: " or "pending selection: ")
+            .. (information and "information present; engine unchecked" or reason)
+    end
+    if NPCEdits == nil then return "random: no configured pool" end
+    if type(NPCEdits) ~= "table" then return "random: unassessable pool" end
+    local seen, count = {}, 0
+    for _, event in pairs(NPCEdits) do
+        if type(event) ~= "table" or type(event.name) ~= "string" or event.name == ""
+            or seen[event.name] or type(event.information) ~= "table" then
+            return "random: unassessable pool"
+        end
+        seen[event.name], count = true, count + 1
+    end
+    return count == 0 and "random: no configured pool"
+        or "random: pool present; event unchosen; engine unchecked"
+end
+
+local function printSpawnConditions(ply, count, readyName)
+    local players, minimum = player.GetCount(), returnMinNumberOfPlayers()
+    local playerCondition = "unavailable (invalid minimum)"
+    if finiteStatusNumber(minimum) then
+        playerCondition = minimum .. (players < minimum and " (below minimum)" or " (met)")
+    end
+    -- Match the existing fallback exactly: zero and negatives are truthy in Lua.
+    local maximum = returnMaxActivators() or 1
+    local capacityCondition = "unavailable (invalid capacity)"
+    if finiteStatusNumber(maximum) then
+        local condition
+        if maximum < 0 then condition = "negative; no capacity"
+        elseif maximum == 0 then condition = "no capacity"
+        elseif maximum ~= math.floor(maximum) then condition = "fractional; unassessed"
+        elseif count >= maximum then condition = "capacity reached"
+        else condition = "space" end
+        capacityCondition = maximum .. " (" .. condition .. ")"
+    end
+    adminLine(ply, "Automatic spawn, next normal attempt: "
+        .. (eventActive and "active encounter (blocked)" or "no active encounter")
+        .. "; players " .. players .. "/min " .. playerCondition
+        .. "; activators " .. count .. "/cap " .. capacityCondition .. ".")
+    local information, reason = currentStatusMap()
+    adminLine(ply, "Spawn inputs: " .. spawnDefinitionStatus(count, readyName)
+        .. "; current-map activator positions: " .. positionStatus(information, reason, "activatorSpawnPositions") .. ".")
+    adminLine(ply, "Encounter start enemy positions: " .. positionStatus(information, reason, "enemySpawnPositions")
+        .. " (required on use).")
+end
+
 local function printSelectionStatus(ply)
     if eventActive then
         adminLine(ply, 'Active event: "' .. activeEventName, '" (' .. totalEnemies .. "/" .. initialEnemies
@@ -126,6 +217,7 @@ local function printSelectionStatus(ply)
     local readyName = selectedBatchAlive() and selectedBatchName or nil
     selectionLine(ply, "Selected ready batch: ", readyName)
     selectionLine(ply, "Pending next batch: ", pendingSelection and pendingSelection.name)
+    printSpawnConditions(ply, count, readyName)
 end
 
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)

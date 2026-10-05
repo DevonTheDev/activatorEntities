@@ -371,7 +371,7 @@ return function(gmod, test, eq)
         end
         noSideEffects(env,function()
             local before=#admin.chats; status(env,admin)
-            assert(#admin.chats-before <= 15, "ready status has a bounded number of lines")
+            assert(#admin.chats-before <= 16, "ready status has a bounded number of lines")
             before=#admin.chats; say(env,admin,"!nextEvent")
             assert(#admin.chats-before <= 12, "configured help has a bounded number of lines")
         end)
