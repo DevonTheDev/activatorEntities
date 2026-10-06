@@ -451,15 +451,19 @@ net.Receive("SendNPCInformation", function(_, ply)
     local identifier = net.ReadString()
     local interaction = interactions[ply]
     interactions[ply] = nil -- A reply consumes the interaction, including invalid replies.
-    if eventActive or not interaction or interaction.expires < CurTime()
-        or not canInteract(ply, interaction.entity) then return end
+    if eventActive or not interaction or not canInteract(ply, interaction.entity) then return end
 
     local ent = interaction.entity
     if identifier ~= ent.EventIdentifier then return end
+    if interaction.expires < CurTime() then
+        ply:ChatPrint("This interaction expired. Use the activator again.")
+        return
+    end
     local info = ent.NPCInfo
     local spawnPosition = returnSpawnPositions(game.GetMap())
     if not spawnPosition then
         ErrorNoHalt("ERROR - There are no enemy spawn positions set for " .. game.GetMap() .. "\n")
+        ply:ChatPrint("No enemy spawn position is available. Ask an admin to fix it, then use the activator again.")
         return
     end
     if type(info.maxNPCs) ~= "number" or info.maxNPCs < 1 or info.maxNPCs == math.huge then return end

@@ -144,7 +144,9 @@ need a live-server check.
 - Starting requires a server-issued interaction belonging to the requesting
   player. The player must be alive, within 200 units of that activator, and
   reply within 60 seconds. Cancel, death, respawn, disconnect, removal, and
-  activation invalidate the interaction. Use the activator again if it expires.
+  activation invalidate the interaction. A matching reply from a living nearby
+  player after expiry receives a private message to use the activator again.
+  A reply at exactly 60 seconds is still accepted.
 - Start and cancel are separate requests. Starting consumes permission once;
   repeated or forged messages cannot replenish the event's enemies.
 - Only NPCs actually spawned for the active event affect its count. World/NPC
@@ -153,7 +155,17 @@ need a live-server check.
   without announcing a victory. The completion popup closes after five seconds;
   a newer completion replaces it and restarts that one-shot dismissal.
 - Missing/empty spawn lists safely pause spawning. Missing enemy spawns leave
-  existing activators available so an admin can add positions and retry.
+  existing activators available and privately tell the requesting player to ask
+  an admin to fix the missing enemy position, then use the activator again.
+
+These two failed starts consume the interaction without starting an encounter
+or changing the ready actors, selected batch, future choice, timer or progress.
+An admin repair does not start it automatically; a fresh Use and Start are
+required. Unissued, invalid, mismatched, cancelled and replayed requests stay
+silent, including mismatched or invalid requests after expiry. Guidance uses
+short constant `ChatPrint` text without configured names or positions; it adds
+no addon network message or client behavior. Failure to create any enemies
+after activation retains its existing cleanup path.
 
 If a server callback cancels an encounter during initial spawning, the abandoned
 loop stops creating enemies and requests removal of any enemy it just created.
@@ -221,6 +233,10 @@ pending ownership, missing and sparse map positions, and malformed or ambiguous
 configuration. Repeated status reads are followed by actual source-level spawn
 and start paths to check that inspection leaves their behavior intact. Timer
 remaining time and native NPC/model availability are not inferred by the tests.
+Start-feedback tests transfer the actual menu callback's request to the server
+receiver. They check private expiry/missing-position guidance, the exact 60/61
+second boundary, consumed replays, silent invalid requests, retained actors and
+selection, and fresh-use recovery after the actual admin repair callback.
 Only in-memory file/codec doubles and test fixtures are used; the tests never
 read or write a server's DATA directory. They exercise the addon at the codec
 boundary, not Garry's Mod's actual JSON parser or filesystem.
@@ -231,8 +247,9 @@ This pass was checked in Lua 5.3 via `texlua`, plus Lua 5.1 and LuaJIT 2.1
 through Lupa 2.6.
 
 These tests do **not** run the Garry's Mod engine. NPC behavior, entity networking,
-Derma layout, real timer timing, and saved Vector JSON round-trips still need an
-in-game check. Suggested multiplayer smoke test:
+native `ChatPrint` delivery/rendering, Derma layout, real timer timing, and saved
+Vector JSON round-trips still need an in-game check. Suggested multiplayer smoke
+test:
 
 1. On `gm_construct`, wait for three activators. Use one and cancel, then use it
    again and start. Confirm five enemies appear and the activators disappear.
@@ -270,6 +287,12 @@ in-game check. Suggested multiplayer smoke test:
     that each explanation matches the state, that enemy positions are labeled
     as a start requirement, and that repeated reads do not alter the next spawn
     or the normal player interaction.
+12. With a second player watching, leave an interaction open for more than 60
+    seconds, then Start. Confirm only the requester sees expiry guidance and
+    a fresh Use can start normally. Remove the final enemy spawn position,
+    open and Start again, and confirm only the requester sees admin-repair
+    guidance. Add a position with `!setEnemySpawn`; confirm it does not start
+    automatically, then use the retained activator again and Start.
 
 ## Remaining follow-ups
 
