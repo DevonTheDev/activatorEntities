@@ -149,6 +149,15 @@ need a live-server check.
   A reply at exactly 60 seconds is still accepted.
 - Start and cancel are separate requests. Starting consumes permission once;
   repeated or forged messages cannot replenish the event's enemies.
+- An open dialogue retires when the client receives a valid active-encounter
+  snapshot or its captured activator is removed or remains invalid. This also
+  covers another player's Start and a start that removes the actors but creates
+  no enemies. Automatic retirement sends no Start or Cancel request, and old
+  callbacks cannot submit through a replacement dialogue. An inactive progress
+  snapshot alone leaves a valid fresh menu usable.
+  Client full-update removal notices are ignored immediately because an entity
+  can be recreated during that refresh; later liveness checks still retire an
+  actor that remains invalid ([Facepunch removal-hook documentation](https://wiki.facepunch.com/gmod/GM:EntityRemoved)).
 - Only NPCs actually spawned for the active event affect its count. World/NPC
   kills are supported. A victory notice is sent once, only if all tracked
   enemies were killed. Cleanup/removal and admin cancellation restart spawning
@@ -237,6 +246,13 @@ Start-feedback tests transfer the actual menu callback's request to the server
 receiver. They check private expiry/missing-position guidance, the exact 60/61
 second boundary, consumed replays, silent invalid requests, retained actors and
 selection, and fresh-use recovery after the actual admin repair callback.
+Dialogue-lifecycle checks transfer real server packets between separate client
+entity copies, exercise actor-removal and client update callbacks, and preserve
+valid menu replacement, ordinary Start/Cancel and completion/progress panels.
+Deferred panel-removal checks also reject retained Start/Cancel callbacks while
+a panel is marked for deletion but still valid, and preserve normal DFrame
+Close/Cancel ordering. They verify request ownership without claiming native
+Derma focus or network delivery timing.
 Only in-memory file/codec doubles and test fixtures are used; the tests never
 read or write a server's DATA directory. They exercise the addon at the codec
 boundary, not Garry's Mod's actual JSON parser or filesystem.
@@ -253,8 +269,10 @@ test:
 
 1. On `gm_construct`, wait for three activators. Use one and cancel, then use it
    again and start. Confirm five enemies appear and the activators disappear.
-2. Have two players open activators; start from one. The other player's stale
-   menu must not create another event. Repeat after dying and respawning.
+2. Have two players open activators; start from one. The other player's old
+   dialogue should close automatically and must not create another event. Also
+   remove an idle actor while its dialogue is open, and check that it closes.
+   Repeat the server's stale-request checks after dying and respawning.
 3. Kill enemies with player weapons and world damage. Confirm one completion
    notice that disappears after five seconds, and the next activator batch after
    the configured delay. With short event delays, finish two rounds quickly and

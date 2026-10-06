@@ -249,6 +249,7 @@ function M.new(client)
             function panel:SetFraction(value) self.fraction=value end
             function panel:GetCamPos() return env.Vector(0,0,0) end
             function panel:IsValid() return self.valid end
+            function panel:IsMarkedForDeletion() return self.markedForDeletion == true end
             function panel:Remove()
                 self.valid=false
                 for _, child in ipairs(self.children) do child:Remove() end
