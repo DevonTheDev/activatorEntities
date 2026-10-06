@@ -96,7 +96,7 @@ local function nameList(ply, names, prefix, counts)
 end
 
 local function selectionHelp(ply)
-    adminLine(ply, "Usage: !nextEvent <exact configured name> (case-sensitive). !clearNextEvent clears the pending choice.")
+    adminLine(ply, "Usage: !nextEvent <exact configured name> (case-sensitive). !clearNextEvent clears the pending choice. !listEvents [page] shows the full catalog.")
     local names, seen = {}, {}
     for _, event in pairs(type(NPCEdits) == "table" and NPCEdits or {}) do
         if type(event) == "table" and type(event.name) == "string" and not seen[event.name] then
@@ -106,6 +106,86 @@ local function selectionHelp(ply)
     end
     nameList(ply, names, "Configured event: ")
     if #names == 0 then adminLine(ply, "No event names are configured.") end
+end
+
+-- A fresh, copied catalog is rendered before the first private reply. Entry
+-- parts, including diagnostics, share one eight-line page budget; no cursor or
+-- encounter state is retained. Eligibility describes !nextEvent, not spawning.
+local function catalogLines()
+    local lines, names, groups = {}, {}, {}
+    local nonTables, missingNames, nonStringNames = 0, 0, 0
+    if NPCEdits == nil then return {"No configured encounters (missing pool)."}, 0 end
+    if type(NPCEdits) ~= "table" then return {"Malformed encounter pool: expected table."}, 0 end
+    for _, event in pairs(NPCEdits) do
+        if type(event) ~= "table" then nonTables = nonTables + 1
+        elseif event.name == nil then missingNames = missingNames + 1
+        elseif type(event.name) ~= "string" then nonStringNames = nonStringNames + 1
+        else
+            local name = event.name
+            if not groups[name] then
+                names[#names + 1] = name
+                groups[name] = {count = 0, missing = 0, nonTable = 0}
+            end
+            local group = groups[name]
+            group.count = group.count + 1
+            if event.information == nil then group.missing = group.missing + 1
+            elseif type(event.information) ~= "table" then group.nonTable = group.nonTable + 1 end
+        end
+    end
+    table.sort(names)
+    for id, name in ipairs(names) do
+        local group, reasons = groups[name], {}
+        if name == "" then reasons[#reasons + 1] = "empty name" end
+        if group.count > 1 then reasons[#reasons + 1] = "duplicate name (" .. group.count .. ")" end
+        if group.missing > 0 then reasons[#reasons + 1] = "missing information: " .. group.missing end
+        if group.nonTable > 0 then reasons[#reasons + 1] = "non-table information: " .. group.nonTable end
+        local status = #reasons == 0 and "eligible" or ("unavailable: " .. table.concat(reasons, "; "))
+        local escaped = name:find("[%c]") ~= nil
+        local display = escaped and name:gsub("[%c\\]", function(char)
+            return string.format("\\x%02X", char:byte())
+        end) or name
+        local suffix = " [" .. status .. "; " .. (escaped and "escaped diagnostic" or "literal") .. ']: "'
+        -- Reserving the display length's digit count covers both part numbers,
+        -- since no chunk can contain fewer than one byte. Never shorten a name.
+        local digits = #tostring(math.max(#display, 1))
+        local limit = 240 - #("Entry " .. id .. " part /" .. suffix .. '"') - 2 * digits
+        local chunks, first = {}, 1
+        repeat
+            local last = math.min(first + limit - 1, #display)
+            while last >= first and display:byte(last + 1) and display:byte(last + 1) >= 128
+                and display:byte(last + 1) <= 191 do last = last - 1 end
+            -- Malformed byte strings have no complete UTF-8 boundary here.
+            -- Still make progress; native arbitrary-string input is unverified.
+            if last < first and #display > 0 then last = first end
+            chunks[#chunks + 1] = display:sub(first, last)
+            first = last + 1
+        until first > #display
+        for part, chunk in ipairs(chunks) do
+            lines[#lines + 1] = "Entry " .. id .. " part " .. part .. "/" .. #chunks .. suffix .. chunk .. '"'
+        end
+    end
+    if nonTables + missingNames + nonStringNames > 0 then
+        lines[#lines + 1] = "Non-table records: " .. nonTables .. "; missing names: " .. missingNames
+            .. "; non-string names: " .. nonStringNames .. "."
+    end
+    if #lines == 0 then lines[1] = "No configured encounters (empty pool)." end
+    return lines, #names
+end
+
+local function printEventCatalog(ply, text)
+    local lines, names = catalogLines()
+    local pages = math.max(1, math.ceil(#lines / 8))
+    local argument = text:match("^!listEvents%s*(.-)%s*$")
+    local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
+    if not page or page < 1 or page > pages then
+        ply:ChatPrint("Usage: !listEvents [page]; page must be a positive integer in 1-" .. pages .. ".")
+        return
+    end
+    ply:ChatPrint("Configured encounters, page " .. page .. "/" .. pages .. " (" .. names
+        .. " names). !nextEvent eligibility only; engine unchecked.")
+    for i = (page - 1) * 8 + 1, math.min(page * 8, #lines) do ply:ChatPrint(lines[i]) end
+    ply:ChatPrint("!listEvents <page> (1-" .. pages .. "). Join parts without added spaces. Use !nextEvent <exact name>"
+        .. " (no added quotes); escaped text is diagnostic, not command input.")
 end
 
 -- Status only inspects current inputs; it neither samples nor refreshes state.
@@ -223,13 +303,16 @@ end
 
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     local command = text:match("^(!%S+)")
-    if command ~= "!nextEvent" and command ~= "!clearNextEvent" and command ~= "!eventStatus" then return end
+    if command ~= "!nextEvent" and command ~= "!clearNextEvent" and command ~= "!eventStatus"
+        and command ~= "!listEvents" then return end
     if not IsValid(ply) or not ply:IsPlayer() then return end
     if not ply:IsAdmin() then
         adminLine(ply, "Only admins can select or inspect encounters.")
         return ""
     end
-    if command == "!nextEvent" then
+    if command == "!listEvents" then
+        printEventCatalog(ply, text)
+    elseif command == "!nextEvent" then
         local name = text:match("^!nextEvent%s(.*)$")
         if not name or name == "" then selectionHelp(ply) return "" end
         local info, reason = selectableEvent(name)

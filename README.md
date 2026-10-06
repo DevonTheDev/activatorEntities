@@ -19,6 +19,7 @@ Admin chat commands:
 - `!removeActivatorSpawn` / `!removeEnemySpawn`: remove the last position
 - `!stopEvent`: remove the current event's enemies and restart the spawn delay
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
+- `!listEvents [page]`: browse all configured names and their selection eligibility
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect the active encounter, ready activators and pending choice
 
@@ -67,6 +68,39 @@ NPC class is unusable in the engine. The status command does not consume the
 pending choice, sample random events/positions, advance the timer, or start an
 encounter. Existing spawning and selection rules continue to decide what the
 next normal attempt does.
+
+### Browse configured encounters
+
+Use `!listEvents` to open page 1, then `!listEvents 2` for the next page. Replies
+are private to the requesting admin. Each fresh page lists names in the same
+case-sensitive order while the configuration stays unchanged. It identifies
+duplicate names, missing information and malformed records instead of presenting
+them as ordinary choices. Bare `!nextEvent` keeps its short help list and points
+to this complete catalog.
+
+An **eligible** entry passes the existing name-selection checks. The engine is
+unchecked: an information table can exist while its model, NPC class or other
+settings are unusable. The catalog does not queue an encounter or alter an active
+one. Use `!nextEvent Supply Raid: Alpha!` to choose that exact configured name;
+do not add quotation marks merely because the catalog surrounds names with them.
+
+Long names continue across numbered parts, which can span pages. Join the contents
+inside their outer quotes without adding spaces. Entry and part numbers are
+display references, not selection IDs. Names containing control characters use
+an explicitly **escaped diagnostic** representation, not text to paste directly
+into a selection command. Native chat input and third-party chat addons may
+limit which names can be entered.
+
+Each reply contains at most eight body lines plus a header and footer, with each
+line kept below the [ChatPrint byte limit](https://wiki.facepunch.com/gmod/Player:ChatPrint).
+Invalid or out-of-range pages give usage feedback. Every call reads the current
+configuration; pages are not a saved snapshot across commands. Reading the catalog
+does not sample randomness, advance timers, spawn entities or save data.
+
+Local tests exercise the actual command handler, selection checks, pagination,
+UTF-8 boundaries and lifecycle state with Garry's Mod API doubles. Native chat
+rendering, copying long names and interaction with a deployed chat addon still
+need a live-server check.
 
 ### Saved spawn data and recovery
 
