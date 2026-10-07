@@ -207,8 +207,8 @@ end
 
 local spawnInspections = {}
 local spawnKinds = {
-    enemy = {field = "enemySpawnPositions", remove = "!removeEnemySpawn"},
-    activator = {field = "activatorSpawnPositions", remove = "!removeActivatorSpawn"},
+    enemy = {field = "enemySpawnPositions", remove = "!removeEnemySpawn", move = "!moveEnemySpawn"},
+    activator = {field = "activatorSpawnPositions", remove = "!removeActivatorSpawn", move = "!moveActivatorSpawn"},
 }
 
 -- Lua 5.3 integer tostring preserves int64 keys; %.17g alone can round them.
@@ -299,8 +299,8 @@ local function printSpawnList(sender, text)
     sender:ChatPrint("Current-map " .. kind .. " spawns, page " .. page .. "/" .. pages
         .. " (" .. #keys .. " positions" .. (#keys == 0 and "; empty list" or "") .. ").")
     for _, line in ipairs(lines) do sender:ChatPrint(line) end
-    sender:ChatPrint("Remove a shown key: " .. spawnKinds[kind].remove
-        .. " <key>. Copy the exact key; list again after any edit. Coordinates are not placement checks.")
+    sender:ChatPrint("Shown key: " .. spawnKinds[kind].remove .. " <key> to remove; " .. spawnKinds[kind].move
+        .. " <key> to move here. Copy the exact key; list again after any edit. Coordinates are not placement checks.")
 end
 
 local function inspectedSpawnTarget(sender, kind, token)
@@ -314,6 +314,21 @@ local function inspectedSpawnTarget(sender, kind, token)
         if not current or current.x ~= shown.x or current.y ~= shown.y or current.z ~= shown.z then return nil end
     end
     return positions, inspection.shown[token].key
+end
+
+-- Capture once and keep a detached, exact Vector without mutating either source.
+local function copySpawnDestination(sender, previous)
+    local ok, position = pcall(function()
+        local destination = sender:GetPos()
+        if not isvector(destination) then return end
+        local x, y, z = destination.x, destination.y, destination.z
+        if not finiteNumber(x) or not finiteNumber(y) or not finiteNumber(z) then return end
+        local copy = Vector(x, y, z)
+        if not isvector(copy) or rawequal(copy, destination) or rawequal(copy, previous)
+            or copy.x ~= x or copy.y ~= y or copy.z ~= z then return end
+        return copy
+    end)
+    if ok then return position end
 end
 
 hook.Add("PlayerDisconnected", "clearSpawnInspection", function(sender)
@@ -333,8 +348,9 @@ end
 hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if type(text) ~= "string" then return end
     local name = text:match("^(!%S+)")
-    local kind = name == "!removeEnemySpawn" and "enemy" or (name == "!removeActivatorSpawn" and "activator")
-    local indexed = kind and text ~= name
+    local moving = name == "!moveEnemySpawn" and "enemy" or (name == "!moveActivatorSpawn" and "activator")
+    local kind = moving or (name == "!removeEnemySpawn" and "enemy" or (name == "!removeActivatorSpawn" and "activator"))
+    local indexed = kind and (moving or text ~= name)
     if name == "!listSpawns" or indexed then
         if not IsValid(sender) or not sender:IsPlayer() then return "" end
         if not sender:IsAdmin() then
@@ -357,9 +373,18 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
             sender:ChatPrint("Spawn unchanged: inspect a current key with !listSpawns " .. kind .. " and copy it exactly.")
             return ""
         end
-        positions[key] = nil
+        if moving then
+            local position = copySpawnDestination(sender, positions[key])
+            if not position then
+                sender:ChatPrint("Spawn unchanged: your position could not be copied as a finite Vector. Try again from a valid position.")
+                return ""
+            end
+            positions[key] = position
+        else
+            positions[key] = nil
+        end
         invalidateSpawnInspections(game.GetMap(), kind)
-        confirmSpawnEdit(sender, "The " .. kind .. " spawn at key " .. token .. " was successfully removed.")
+        confirmSpawnEdit(sender, "The " .. kind .. " spawn at key " .. token .. " was successfully " .. (moving and "moved." or "removed."))
         return ""
     end
     if not IsValid(sender) or not sender:IsPlayer() or not sender:IsAdmin() then return end
