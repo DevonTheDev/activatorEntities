@@ -17,6 +17,8 @@ Admin chat commands:
 
 - `!setActivatorSpawn` / `!setEnemySpawn`: add your current position for this map
 - `!removeActivatorSpawn` / `!removeEnemySpawn`: remove the last position
+- `!listSpawns enemy|activator [page]`: privately inspect this map's configured positions
+- `!removeEnemySpawn <key>` / `!removeActivatorSpawn <key>`: remove one freshly inspected position
 - `!stopEvent`: remove the current event's enemies and restart the spawn delay
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
 - `!listEvents [page]`: browse all configured names and their selection eligibility
@@ -26,6 +28,47 @@ Admin chat commands:
 Accepted spawn additions/removals are saved immediately to the DATA directory,
 with another save on clean server shutdown. Positions load on initialization.
 Back up the existing spawn data before testing changes.
+
+### Correct one spawn point
+
+Use `!listSpawns enemy` to inspect the first eight enemy positions, or
+`!listSpawns enemy 2` for the next page. Use `activator` for the other list.
+Each row shows its actual stored key and coordinates. For example, after the
+list shows key `2`, `!removeEnemySpawn 2` removes that point alone. Later points
+keep their keys and coordinates. Walk to the replacement location and use the
+existing `!setEnemySpawn` command to add a new point.
+
+Copy the exact displayed key, including scientific notation if shown for an
+unusually large key. Keys identify stored entries, not row numbers or positions
+within the page. The bare remove commands still remove the last point; an
+invalid indexed request never falls back to that behavior.
+If a maximum key is too large for adding one to produce a distinct valid key,
+adding a point is refused instead of overwriting an existing point or wrapping.
+
+Indexed removal requires your latest inspected page for that map and point
+kind. Listing another page or kind replaces it. An accepted edit by any admin
+invalidates inspections for the affected map/kind, even if saving fails.
+Changed coordinates on the shown page, replaced lists, missing entries and stale or reused keys
+require listing again. Inspections are temporary, private to the requesting
+admin and cleared on initialization or disconnection. They are not persistent
+point IDs; arbitrary external replacement with identical content cannot be
+distinguished. Missing or malformed target lists and ambiguous current-map
+records are refused without modifying them.
+
+These commands edit the input lists used by future ordinary spawn attempts.
+They do not move existing actors or change an active encounter. A coordinate
+listing does not prove a point is navigable, clear of collisions or otherwise
+usable by the native engine. Successful removal uses the same immediate save
+path as other edits; if saving fails or is disabled, the accepted change stays
+in memory and the reply says so.
+
+Local tests exercise actual command, persistence and encounter handlers using
+engine doubles. Native chat-addon interaction, Vector serialization, DATA-file
+persistence and world placement still need a disposable Garry's Mod server
+check. On that server, have two admins list and remove a middle point, trigger a
+stale inspection with another edit, add a replacement and restart to verify
+persistence. Repeat for both point kinds and check that an active encounter
+continues normally.
 
 ### Choose the next encounter
 

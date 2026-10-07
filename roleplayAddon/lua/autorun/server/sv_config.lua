@@ -185,6 +185,141 @@ end
 
 util.AddNetworkString("entitiesDeleted")
 
+-- The same finite sparse-list contract applies to persistence and inspection.
+local function finiteNumber(value)
+    return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+end
+
+local function listIndex(value)
+    return finiteNumber(value) and value >= 1 and value == math.floor(value)
+end
+
+local function validPositionList(positions)
+    if type(positions) ~= "table" then return false end
+    for key, position in pairs(positions) do
+        if not listIndex(key) or not isvector(position)
+            or not finiteNumber(position.x) or not finiteNumber(position.y) or not finiteNumber(position.z) then
+            return false
+        end
+    end
+    return true
+end
+
+local spawnInspections = {}
+local spawnKinds = {
+    enemy = {field = "enemySpawnPositions", remove = "!removeEnemySpawn"},
+    activator = {field = "activatorSpawnPositions", remove = "!removeActivatorSpawn"},
+}
+
+-- Lua 5.3 integer tostring preserves int64 keys; %.17g alone can round them.
+-- Lua 5.1/LuaJIT may need the fallback for integral doubles. Verify either form.
+local function spawnNumberToken(value)
+    local token = tostring(value)
+    if tonumber(token) == value then return token end
+    local formatted, precise = pcall(string.format, "%.17g", value)
+    if formatted and tonumber(precise) == value then return precise end
+end
+
+local function inspectedSpawnList(kind)
+    if type(SpawnPositions) ~= "table" then return nil, nil, "malformed map data" end
+    local currentMap, information = game.GetMap(), nil
+    for key, record in pairs(SpawnPositions) do
+        if not listIndex(key) or type(record) ~= "table"
+            or type(record.map) ~= "string" or record.map == "" then
+            return nil, nil, "malformed map data"
+        end
+        if record.map == currentMap then
+            if information then return nil, nil, "ambiguous current-map records" end
+            information = record
+        end
+    end
+    if not information then return nil, nil, "missing current-map record" end
+    local positions = information[spawnKinds[kind].field]
+    if positions == nil then return nil, nil, "missing " .. kind .. " list" end
+    if not validPositionList(positions) then return nil, nil, "malformed " .. kind .. " list" end
+    return information, positions
+end
+
+local function invalidateSpawnInspections(map, kind)
+    for admin, inspection in pairs(spawnInspections) do
+        if inspection.map == map and inspection.kind == kind then spawnInspections[admin] = nil end
+    end
+end
+
+local function printSpawnList(sender, text)
+    spawnInspections[sender] = nil
+    local kind, argument = text:match("^!listSpawns%s+(%S+)%s*(.-)%s*$")
+    if not spawnKinds[kind] then
+        sender:ChatPrint("Usage: !listSpawns enemy|activator [page].")
+        return
+    end
+    local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
+    if not page or not listIndex(page) then
+        sender:ChatPrint("Usage: !listSpawns " .. kind .. " [page]; use a positive integer page.")
+        return
+    end
+    local information, positions, reason = inspectedSpawnList(kind)
+    if not information then
+        sender:ChatPrint("Cannot inspect spawns: " .. reason .. ".")
+        return
+    end
+    local keys = {}
+    for key in pairs(positions) do
+        if not spawnNumberToken(key) then
+            sender:ChatPrint("Cannot inspect spawns: a key cannot be represented exactly.")
+            return
+        end
+        keys[#keys + 1] = key
+    end
+    table.sort(keys)
+    local pages = math.max(1, math.ceil(#keys / 8))
+    if page > pages then
+        sender:ChatPrint("Usage: !listSpawns " .. kind .. " [page]; page must be in 1-" .. pages .. ".")
+        return
+    end
+    local shown, lines = {}, {}
+    for i = (page - 1) * 8 + 1, math.min(page * 8, #keys) do
+        local key, position = keys[i], positions[keys[i]]
+        local token = spawnNumberToken(key)
+        local x, y, z = spawnNumberToken(position.x), spawnNumberToken(position.y), spawnNumberToken(position.z)
+        if not token or not x or not y or not z then
+            sender:ChatPrint("Cannot inspect spawns: a value cannot be represented exactly.")
+            return
+        end
+        local line = "Key " .. token .. ": x=" .. x .. ", y=" .. y .. ", z=" .. z
+        if #line > 255 then
+            sender:ChatPrint("Cannot inspect spawns: a position exceeds the chat line limit.")
+            return
+        end
+        lines[#lines + 1] = line
+        shown[token] = {key = key, x = position.x, y = position.y, z = position.z}
+    end
+    spawnInspections[sender] = {map = game.GetMap(), kind = kind, information = information,
+        positions = positions, shown = shown}
+    sender:ChatPrint("Current-map " .. kind .. " spawns, page " .. page .. "/" .. pages
+        .. " (" .. #keys .. " positions" .. (#keys == 0 and "; empty list" or "") .. ").")
+    for _, line in ipairs(lines) do sender:ChatPrint(line) end
+    sender:ChatPrint("Remove a shown key: " .. spawnKinds[kind].remove
+        .. " <key>. Copy the exact key; list again after any edit. Coordinates are not placement checks.")
+end
+
+local function inspectedSpawnTarget(sender, kind, token)
+    local inspection = spawnInspections[sender]
+    if not inspection or inspection.kind ~= kind or inspection.map ~= game.GetMap()
+        or not inspection.shown[token] then return nil end
+    local information, positions = inspectedSpawnList(kind)
+    if not rawequal(information, inspection.information) or not rawequal(positions, inspection.positions) then return nil end
+    for _, shown in pairs(inspection.shown) do
+        local current = positions[shown.key]
+        if not current or current.x ~= shown.x or current.y ~= shown.y or current.z ~= shown.z then return nil end
+    end
+    return positions, inspection.shown[token].key
+end
+
+hook.Add("PlayerDisconnected", "clearSpawnInspection", function(sender)
+    spawnInspections[sender] = nil
+end)
+
 -- The save routine is assigned below before any chat command can run.
 local saveSpawnPositions
 local function confirmSpawnEdit(sender, message)
@@ -196,7 +331,38 @@ end
 
 -- Function that allows admins to modify spawn positions in game.
 hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
-    if not sender:IsAdmin() then return end
+    if type(text) ~= "string" then return end
+    local name = text:match("^(!%S+)")
+    local kind = name == "!removeEnemySpawn" and "enemy" or (name == "!removeActivatorSpawn" and "activator")
+    local indexed = kind and text ~= name
+    if name == "!listSpawns" or indexed then
+        if not IsValid(sender) or not sender:IsPlayer() then return "" end
+        if not sender:IsAdmin() then
+            sender:ChatPrint("Only admins can inspect or edit spawn positions.")
+            return ""
+        end
+        if name == "!listSpawns" then
+            printSpawnList(sender, text)
+            return ""
+        end
+        local token = text:match("^!%S+%s+(%S+)%s*$")
+        -- Match the literal inspected token, not tonumber(input): an unlisted
+        -- decimal can round to another valid key on double-only runtimes.
+        if not token then
+            sender:ChatPrint("Usage: " .. name .. " <key>; copy an exact key from !listSpawns " .. kind .. ".")
+            return ""
+        end
+        local positions, key = inspectedSpawnTarget(sender, kind, token)
+        if not positions then
+            sender:ChatPrint("Spawn unchanged: inspect a current key with !listSpawns " .. kind .. " and copy it exactly.")
+            return ""
+        end
+        positions[key] = nil
+        invalidateSpawnInspections(game.GetMap(), kind)
+        confirmSpawnEdit(sender, "The " .. kind .. " spawn at key " .. token .. " was successfully removed.")
+        return ""
+    end
+    if not IsValid(sender) or not sender:IsPlayer() or not sender:IsAdmin() then return end
 
     if text == "!stopEvent" then
         if stopActivatorEvent and stopActivatorEvent() then
@@ -224,13 +390,21 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
             table.insert(SpawnPositions, information)
         end
         local positions = information[command[1]]
-        positions[table.maxn(positions) + 1] = sender:GetPos()
+        local maximum = table.maxn(positions)
+        local nextKey = maximum + 1
+        if not listIndex(nextKey) or nextKey <= maximum or positions[nextKey] ~= nil then
+            sender:ChatPrint("Cannot add a spawn: no exact free key follows the current maximum. Existing positions are unchanged.")
+            return ""
+        end
+        positions[nextKey] = sender:GetPos()
+        invalidateSpawnInspections(game.GetMap(), command[1] == "enemySpawnPositions" and "enemy" or "activator")
         confirmSpawnEdit(sender, "New " .. command[2] .. " Spawn Successfully Set at " .. tostring(sender:GetPos()) .. ".")
     else
         local positions = information and information[command[1]]
         local last = positions and table.maxn(positions) or 0
         if last > 0 then
             positions[last] = nil
+            invalidateSpawnInspections(game.GetMap(), command[1] == "enemySpawnPositions" and "enemy" or "activator")
             confirmSpawnEdit(sender, "The previous " .. command[2] .. " spawn was successfully removed.")
         else
             sender:ChatPrint("There are no more " .. command[2] .. " spawns to remove.")
@@ -242,25 +416,6 @@ end)
 local spawnDataFile = "devonsspawninfo.json"
 local legacySpawnDataFile = "DevonsSpawnInfo.json"
 local canSaveSpawnPositions = false
-
-local function finiteNumber(value)
-    return type(value) == "number" and value == value and value > -math.huge and value < math.huge
-end
-
-local function listIndex(value)
-    return finiteNumber(value) and value >= 1 and value == math.floor(value)
-end
-
-local function validPositionList(positions)
-    if type(positions) ~= "table" then return false end
-    for key, position in pairs(positions) do
-        if not listIndex(key) or not isvector(position)
-            or not finiteNumber(position.x) or not finiteNumber(position.y) or not finiteNumber(position.z) then
-            return false
-        end
-    end
-    return true
-end
 
 -- Validate without rebuilding lists: preserve sparse keys and native Vectors
 -- restored by util.JSONToTable from GMod's existing "[x y z]" representation.
@@ -315,6 +470,7 @@ hook.Add("ShutDown", "saveTheTables", function()
 end)
 
 hook.Add("Initialize", "loadTheTables", function()
+    spawnInspections = {}
     canSaveSpawnPositions = false
     local read, JSONData, filename = pcall(readSpawnData)
     if not read or (filename and type(JSONData) ~= "string") then
