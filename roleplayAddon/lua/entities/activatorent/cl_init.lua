@@ -61,8 +61,7 @@ net.Receive("OpenInteractionMenu", function(len)
     ply:ScreenFade(SCREENFADE.IN, color_black, 0.3, 0)
     frame:SetVisible(true)
     frame:SetTitle("")
-    frame:SetSize(ScrW(), ScrH())
-    frame:Center()
+    frame:SetDraggable(false)
     frame:MakePopup()
     frame:SetBackgroundBlur(true)
     frame:SetDeleteOnClose(true)
@@ -73,15 +72,14 @@ net.Receive("OpenInteractionMenu", function(len)
     dialogueText:SetText(npcDialogue)
     dialogueText:SetFont("DermaLarge")
     dialogueText:SetColor(Color(255, 255, 255, 255))
-    dialogueText:SetSize(ScrW(), frame:GetTall())
-    dialogueText:Dock(BOTTOM)
-    dialogueText:DockMargin(600, 0, 0, -500)
+    dialogueText:SetWrap(true)
+    dialogueText:SetAutoStretchVertical(true)
+    dialogueText:Dock(TOP)
     
     -- Sets up the button to start the event
     local activatorButton = vgui.Create("DButton", frame)
     activatorButton:SetText("Bring it on (Start the Event)")
-    activatorButton:SetSize(300, 100)
-    activatorButton:SetPos(0, ScrH() - 100)
+    activatorButton:SetWrap(true)
 
     activatorButton.DoClick = function()
         if submitted or closed or activeFrame ~= frame or not IsValid(frame) or frame:IsMarkedForDeletion() then return end
@@ -96,8 +94,7 @@ net.Receive("OpenInteractionMenu", function(len)
     -- Sets up the button to quit the menu
     local otherButton = vgui.Create("DButton", frame)
     otherButton:SetText("You wont get the chance (Quit the menu)")
-    otherButton:SetSize(300, 100)
-    otherButton:SetPos(ScrW() - 300, ScrH() - 100)
+    otherButton:SetWrap(true)
 
     otherButton.DoClick = function()
         if closed or activeFrame ~= frame or not IsValid(frame) or frame:IsMarkedForDeletion() then return end
@@ -111,14 +108,45 @@ net.Receive("OpenInteractionMenu", function(len)
 
     -- Entity Frame creation
     local modelFrame = vgui.Create("DModelPanel", frame)
-    modelFrame:SetSize(900, 900)
     modelFrame:SetModel(ent:GetModel())
     modelFrame:SetFOV(80)
     modelFrame:SetCamPos(modelFrame:GetCamPos() + Vector(0, -50, -10))
-    modelFrame:Center()
 
     function modelFrame:LayoutEntity(ent) return end -- Ensures the model wont spin
 
+    -- Native canvas docking and label auto-height keep all dialogue scrollable.
+    local dialogueScroll = vgui.Create("DScrollPanel", frame)
+    dialogueScroll:AddItem(dialogueText)
+
+    function frame:LayoutDialogue()
+        if closed or activeFrame ~= self or not IsValid(self) or self:IsMarkedForDeletion() or not IsValid(ent) then return end
+        local width, height = ScrW(), ScrH()
+        local margin = math.max(8, math.min(24, math.floor(math.min(width, height) * 0.025)))
+        local buttonWidth = math.min(300, math.floor((width - margin * 3) / 2))
+        local buttonHeight = math.min(100, math.max(48, math.floor(height * 0.14)))
+        local actionY = height - margin - buttonHeight
+        local contentTop = margin + 24
+        local contentHeight = actionY - margin - contentTop
+        local modelWidth = math.floor((width - margin * 3) * 0.45)
+        local modelSize = math.min(900, modelWidth, contentHeight)
+
+        self:SetSize(width, height)
+        self:SetPos(0, 0)
+        activatorButton:SetSize(buttonWidth, buttonHeight)
+        activatorButton:SetPos(margin, actionY)
+        otherButton:SetSize(buttonWidth, buttonHeight)
+        otherButton:SetPos(width - margin - buttonWidth, actionY)
+        modelFrame:SetSize(modelSize, modelSize)
+        modelFrame:SetPos(margin + math.floor((modelWidth - modelSize) / 2), contentTop + math.floor((contentHeight - modelSize) / 2))
+        dialogueScroll:SetPos(margin * 2 + modelWidth, contentTop)
+        dialogueScroll:SetSize(width - margin * 3 - modelWidth, contentHeight)
+    end
+    frame:LayoutDialogue()
+
+end)
+
+hook.Add("OnScreenSizeChanged", "layoutActivatorDialogue", function()
+    if IsValid(activeFrame) then activeFrame:LayoutDialogue() end
 end)
 
 net.Receive("roundFinished", function()

@@ -223,19 +223,49 @@ function M.new(client)
     end
     if client then
         env.panels = {}
+        env.TOP, env.BOTTOM, env.FILL = 4, 5, 1
         env.screenWidth, env.screenHeight = 1920, 1080
         env.ScrW, env.ScrH = function() return env.screenWidth end, function() return env.screenHeight end
         env.vgui = {}
         function env.vgui.Create(class, parent)
             local panel = {valid=true, class=class, parent=parent, children={}, visible=true, x=0, y=0, width=0, height=0}
             if parent then table.insert(parent.children, panel) end
-            for _, method in ipairs({"SetTitle", "SetBackgroundBlur", "SetDeleteOnClose", "ShowCloseButton", "SetFont", "SetColor", "Dock", "DockMargin", "DockPadding", "SetModel", "SetFOV", "SetCamPos", "SetPaintShadow", "SizeToContents", "SetContentAlignment", "SetTextColor", "SetWrap"}) do panel[method]=function() end end
+            for _, method in ipairs({"SetTitle", "SetBackgroundBlur", "SetDeleteOnClose", "ShowCloseButton", "SetFont", "SetColor", "DockPadding", "SetModel", "SetFOV", "SetCamPos", "SetPaintShadow", "SizeToContents", "SetTextColor", "SetContentAlignment"}) do panel[method]=function() end end
+            -- Record native layout/text configuration only. No docking, text
+            -- measurement, scroll extent, clipping or input is simulated here.
+            function panel:Dock(value) self.dock=value end
+            function panel:DockMargin(...) self.dockMargin={...} end
+            function panel:SetWrap(value) self.wrap=value end
+            function panel:SetAutoStretchVertical(value) self.autoStretchVertical=value end
+            function panel:SetDraggable(value) self.draggable=value end
+            function panel:SetParent(value)
+                if self.parent then
+                    for i,child in ipairs(self.parent.children) do
+                        if child == self then table.remove(self.parent.children,i); break end
+                    end
+                end
+                self.parent=value
+                if value then table.insert(value.children,self) end
+            end
+            if class == "DScrollPanel" then
+                function panel:GetCanvas()
+                    if not self.canvas then self.canvas=env.vgui.Create("Panel",self) end
+                    return self.canvas
+                end
+                function panel:AddItem(child)
+                    self.addedItems=self.addedItems or {}
+                    table.insert(self.addedItems,child)
+                    child:SetParent(self:GetCanvas())
+                end
+            end
             function panel:SetText(value) self.text=value end
             function panel:SetVisible(value) self.visible=value end
             function panel:IsVisible() return self.valid and self.visible end
-            function panel:SetSize(width, height) self.width, self.height=width, height end
-            function panel:SetWide(value) self.width=value end
-            function panel:SetTall(value) self.height=value end
+            function panel:SetSize(width, height)
+                self.width, self.height=width, height; self.sizeChanges=(self.sizeChanges or 0)+1
+            end
+            function panel:SetWide(value) self.width=value; self.sizeChanges=(self.sizeChanges or 0)+1 end
+            function panel:SetTall(value) self.height=value; self.sizeChanges=(self.sizeChanges or 0)+1 end
             function panel:GetWide() return self.width end
             function panel:GetTall() return self.height end
             function panel:SetPos(x, y) self.x, self.y=x, y; self.positionChanges=(self.positionChanges or 0)+1 end

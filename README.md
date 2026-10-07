@@ -192,6 +192,11 @@ need a live-server check.
   A reply at exactly 60 seconds is still accepted.
 - Start and cancel are separate requests. Starting consumes permission once;
   repeated or forged messages cannot replenish the event's enemies.
+- The full-screen dialogue fits its model and wrapped text into separate content
+  areas above Start and Cancel. Long dialogue uses native vertical scrolling;
+  the original button captions also wrap at narrow widths. Resolution changes
+  resize the same open menu without submitting a request. Its full-screen frame
+  cannot be dragged off-screen.
 - An open dialogue retires when the client receives a valid active-encounter
   snapshot or its captured activator is removed or remains invalid. This also
   covers another player's Start and a start that removes the actors but creates
@@ -296,6 +301,11 @@ Deferred panel-removal checks also reject retained Start/Cancel callbacks while
 a panel is marked for deletion but still valid, and preserve normal DFrame
 Close/Cancel ordering. They verify request ownership without claiming native
 Derma focus or network delivery timing.
+Dialogue-layout checks cover 320x240 through wide and tall viewports, repeated
+shrink/grow cycles, distinct action bounds, complete configured text, and native
+wrap/scroll setup. They inspect panel geometry and API configuration, not rendered
+font metrics, scrollbar reachability, pointer routing or model pixels. Native
+DFrame and DLabel Think behavior remains responsible for their normal updates.
 Only in-memory file/codec doubles and test fixtures are used; the tests never
 read or write a server's DATA directory. They exercise the addon at the codec
 boundary, not Garry's Mod's actual JSON parser or filesystem.
@@ -354,10 +364,17 @@ test:
     open and Start again, and confirm only the requester sees admin-repair
     guidance. Add a position with `!setEnemySpawn`; confirm it does not start
     automatically, then use the retained activator again and Start.
+13. Open the dialogue at 800x600, 1280x720, 1920x1080, and wide/tall window sizes;
+    include 320x240 if the client permits it. Shrink and grow the same open menu.
+    Check model framing, full wrapped button captions, and both click targets.
+    With long text and explicit line breaks, scroll to the final line, resize
+    while scrolled, and confirm all text remains reachable. Exercise Start and
+    Cancel after resizing, then repeat the two-player retirement check in step 2.
 
 ## Remaining follow-ups
 
 - Consider an atomic/backup write flow to protect against interrupted writes
 - Exercise live Lua hot-reload during an active encounter; local round state is
   intentionally not persisted across script reloads
-- Check the existing full-screen dialogue layout at different resolutions
+- Verify native dialogue wrapping, scrolling, focus and model framing with the
+  disposable-client checks above
