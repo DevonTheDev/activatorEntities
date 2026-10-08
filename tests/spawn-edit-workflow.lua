@@ -3,7 +3,8 @@
 -- DATA round-trips, navigability and arbitrary external same-content edits
 -- remain outside this local regression proof.
 return function(gmod, test, eq)
-    local canonical="devonsspawninfo.json"
+    local newCodec=dofile("tests/spawn-storage-codec.lua")
+    local canonical,backup="devonsspawninfo.json","devonsspawninfo.backup.json"
     local kinds={
         {name="enemy", field="enemySpawnPositions", remove="!removeEnemySpawn", add="!setEnemySpawn", first=2, middle=10, last=27},
         {name="activator", field="activatorSpawnPositions", remove="!removeActivatorSpawn", add="!setActivatorSpawn", first=3, middle=11, last=29},
@@ -41,7 +42,8 @@ return function(gmod, test, eq)
         end
     end
     local function storage(env)
-        local state={files={},reads=0,encodes=0,writes={},encoded={}}
+        local state={files={},reads=0,decodes=0,encodes=0,writes={},canonicalWrites={},backupWrites={},encoded={}}
+        local codec=newCodec(env,eq); state.codec=codec
         env.print=function() end
         env.file.Exists=function(path,realm) eq(realm,"DATA"); return state.files[path] ~= nil end
         env.file.Read=function(path,realm)
@@ -49,19 +51,25 @@ return function(gmod, test, eq)
             return state.files[path]
         end
         env.file.Write=function(path,contents)
-            state.writes[#state.writes+1]={path=path,contents=contents}
+            local write={path=path,contents=contents}
+            state.writes[#state.writes+1]=write
+            local destination=path == canonical and state.canonicalWrites or state.backupWrites
+            if path ~= canonical then eq(path,backup) end
+            destination[#destination+1]=write
             if state.failure == "write error" then error("synthetic write failure") end
             if state.failure == "write false" then return false end
             state.files[path]=contents
             return true
         end
-        env.util.JSONToTable=function() return state.decoded end
+        env.util.JSONToTable=function(...)
+            state.decodes=state.decodes+1; return codec.decode(...)
+        end
         env.util.TableToJSON=function(value)
-            state.encodes=state.encodes+1; state.encoded[#state.encoded+1]=copy(value)
+            state.encodes=state.encodes+1; state.encoded[#state.encoded+1]=codec.copy(value)
             if state.failure == "encode error" then error("synthetic encode failure") end
             if state.failure == "encode nil" then return nil end
             if state.failure == "encode empty" then return "" end
-            return '{"fixture":' .. state.encodes .. '}'
+            return codec.encode(value)
         end
         return state
     end
@@ -144,10 +152,10 @@ return function(gmod, test, eq)
     end
     local function unchanged(env,ioState,callback)
         local positions=tree(env.SpawnPositions); local state=lifecycle(env)
-        local reads,encodes,writes,errors=ioState.reads,ioState.encodes,#ioState.writes,#env.errors
+        local reads,decodes,encodes,writes,errors=ioState.reads,ioState.decodes,ioState.encodes,#ioState.writes,#env.errors
         quietEngine(env,callback)
         sameTree(env.SpawnPositions,positions); sameLifecycle(env,state)
-        eq(ioState.reads,reads); eq(ioState.encodes,encodes); eq(#ioState.writes,writes)
+        eq(ioState.reads,reads); eq(ioState.decodes,decodes); eq(ioState.encodes,encodes); eq(#ioState.writes,writes)
         eq(#env.errors,errors,"unsuccessful request does not attempt persistence")
     end
     local function selection(env,admin)
@@ -203,13 +211,17 @@ return function(gmod, test, eq)
             sameTree(current[otherField],otherKind); sameTree(env.SpawnPositions[19],other)
             sameLifecycle(env,state); eq(ioState.encodes,1); eq(#ioState.writes,1)
             eq(ioState.writes[1].path,canonical); eq(ioState.encoded[1][4][kind.field][kind.middle],nil)
-            assert(not admin.chats[#admin.chats]:find("in memory only",1,true))
+            assert(not admin.chats[#admin.chats]:find("remains in memory",1,true))
             unchanged(env,ioState,function() remove(env,admin,kind,kind.first) end)
+            local predecessor=ioState.files[canonical]
             admin:SetPos(env.Vector(901,902,903))
             eq(say(env,admin,kind.add),nil,"bare command chat visibility remains unchanged")
             eq(list[kind.last+1],admin:GetPos()); eq(list[kind.middle],nil)
             eq(list[kind.first],first); eq(list[kind.last],last)
-            eq(ioState.encodes,2); eq(#ioState.writes,2)
+            eq(ioState.encodes,2); eq(#ioState.canonicalWrites,2); eq(#ioState.backupWrites,1); eq(#ioState.writes,3)
+            eq(ioState.files[backup],predecessor,"backup keeps the exact prior removal")
+            ioState.codec.same(ioState.codec.decode(ioState.files[backup]),ioState.encoded[1])
+            ioState.codec.same(ioState.codec.decode(ioState.files[canonical]),ioState.encoded[2])
             eq(#second.chats,0); eq(#observer.chats,0)
         end)
 
@@ -225,7 +237,7 @@ return function(gmod, test, eq)
                 unchanged(env,ioState,function() remove(env,admin,kind,kind.first) end)
                 eq(current[kind.field][kind.first],point)
                 inspect(env,admin,kind); remove(env,admin,kind,kind.first)
-                eq(current[kind.field][kind.first],nil); eq(#ioState.writes,2)
+                eq(current[kind.field][kind.first],nil); eq(#ioState.canonicalWrites,2); eq(#ioState.backupWrites,1); eq(#ioState.writes,3)
             end)
         end
 
@@ -234,11 +246,11 @@ return function(gmod, test, eq)
             current[kind.field]={[2]=env.Vector(1,2,3),[3]=env.Vector(4,5,6)}
             inspect(env,admin,kind)
             second:SetPos(env.Vector(4,5,6)); say(env,second,kind.remove); say(env,second,kind.add)
-            local replacement=current[kind.field][3]; eq(replacement,second:GetPos()); eq(#ioState.writes,2)
+            local replacement=current[kind.field][3]; eq(replacement,second:GetPos()); eq(#ioState.canonicalWrites,2); eq(#ioState.backupWrites,1); eq(#ioState.writes,3)
             unchanged(env,ioState,function() remove(env,admin,kind,3) end)
             eq(current[kind.field][3],replacement)
             inspect(env,admin,kind); remove(env,admin,kind,3)
-            eq(current[kind.field][3],nil); eq(#ioState.writes,3)
+            eq(current[kind.field][3],nil); eq(#ioState.canonicalWrites,3); eq(#ioState.backupWrites,2); eq(#ioState.writes,5)
         end)
 
         for _,boundary in ipairs({"disconnect","initialize missing file","initialize rejected file"}) do
@@ -258,7 +270,7 @@ return function(gmod, test, eq)
                 eq(current[kind.field][kind.first],nil,"a fresh inspection restores authority")
                 if boundary == "initialize rejected file" then
                     eq(#ioState.writes,0); eq(ioState.encodes,0); eq(ioState.files[canonical],"recoverable invalid data")
-                    contains(admin.chats[#admin.chats],"in memory only")
+                    contains(admin.chats[#admin.chats],"remains in memory; saving failed, is disabled or could not be verified")
                 end
             end)
         end
@@ -271,7 +283,7 @@ return function(gmod, test, eq)
                 quietEngine(env,function() remove(env,second,kind,kind.middle) end)
                 eq(current[kind.field][kind.middle],nil); sameLifecycle(env,state)
                 eq(ioState.encodes,1); eq(#ioState.writes,failure:find("write",1,true) and 1 or 0)
-                eq(ioState.files[canonical],nil); contains(second.chats[#second.chats],"in memory only")
+                eq(ioState.files[canonical],nil); contains(second.chats[#second.chats],"remains in memory; saving failed, is disabled or could not be verified")
                 eq(#env.errors,errors+1); eq(#observer.chats,0)
                 unchanged(env,ioState,function() remove(env,admin,kind,kind.first) end)
                 ioState.failure=nil; local attempts=#ioState.writes
@@ -290,7 +302,7 @@ return function(gmod, test, eq)
                 local original=ioState.files[canonical]
                 inspect(env,admin,kind); inspect(env,second,kind)
                 remove(env,second,kind,kind.middle); eq(current[kind.field][kind.middle],nil)
-                contains(second.chats[#second.chats],"in memory only")
+                contains(second.chats[#second.chats],"remains in memory; saving failed, is disabled or could not be verified")
                 unchanged(env,ioState,function() remove(env,admin,kind,kind.first) end)
                 env.fire("ShutDown")
                 eq(ioState.encodes,0); eq(#ioState.writes,0); eq(ioState.files[canonical],original)
@@ -303,7 +315,7 @@ return function(gmod, test, eq)
             inspect(env,admin,kind); remove(env,admin,kind,kind.middle)
             eq(current[kind.field][kind.middle],nil)
             eq(ioState.encodes,0); eq(#ioState.writes,0)
-            contains(admin.chats[#admin.chats],"in memory only")
+            contains(admin.chats[#admin.chats],"remains in memory; saving failed, is disabled or could not be verified")
             env.fire("ShutDown"); eq(ioState.encodes,0); eq(#ioState.writes,0)
         end)
 
@@ -423,13 +435,13 @@ return function(gmod, test, eq)
         unchanged(env,ioState,function() env.deliver(request,admin) end)
         second:SetPos(env.Vector(700,800,900)); eq(say(env,second,kind.add),nil)
         eq(current.enemySpawnPositions[1],second:GetPos()); eq(current.enemySpawnPositions[10],nil)
-        eq(ioState.encodes,2); eq(#ioState.writes,2); eq(env.totalEnemies,0)
+        eq(ioState.encodes,2); eq(#ioState.canonicalWrites,2); eq(#ioState.backupWrites,1); eq(#ioState.writes,3); eq(env.totalEnemies,0)
         unchanged(env,ioState,function() env.deliver(request,admin) end)
         menu=open(env,client,admin,actor); click(env,client,admin,menu)
         eq(env.totalEnemies,2); eq(#env.ents.FindByClass("activatorent"),0)
         contains(selection(env,admin),'Pending next batch: "Raid"')
         for _,enemy in ipairs(env.ents.FindByName("devonsSpawnedEntity")) do env.fire("OnNPCKilled",enemy,admin) end
         eq(env.messageCount("roundFinished"),1); env.fireTimer("activatorSpawner")
-        eq(#env.ents.FindByClass("activatorent"),3); eq(#ioState.writes,2)
+        eq(#env.ents.FindByClass("activatorent"),3); eq(#ioState.canonicalWrites,2); eq(#ioState.backupWrites,1); eq(#ioState.writes,3)
     end)
 end

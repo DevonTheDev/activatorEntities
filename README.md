@@ -27,8 +27,8 @@ Admin chat commands:
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect the active encounter, ready activators and pending choice
 
-Accepted spawn additions, removals and moves are saved immediately to the DATA directory,
-with another save on clean server shutdown. Positions load on initialization.
+Accepted spawn additions, removals and moves attempt a verified save immediately
+to the DATA directory; clean shutdown also checks the latest state. Positions load on initialization.
 Back up the existing spawn data before testing changes.
 
 ### Correct one spawn point
@@ -53,7 +53,8 @@ adding a point is refused instead of overwriting an existing point or wrapping.
 Moving a point or removing it by key requires your latest inspected page for that map and point
 kind. Listing another page or kind replaces it. An accepted edit by any admin
 invalidates inspections for the affected map/kind, even if saving fails.
-Moving to the same coordinates still counts as an accepted edit and saves once.
+Moving to the same coordinates still counts as an accepted edit and invokes the
+save path once. Byte-identical acknowledged data is verified without rewriting it.
 Changed coordinates on the shown page, replaced lists, missing entries and stale or reused keys
 require listing again. Inspections are temporary, private to the requesting
 admin and cleared on initialization or disconnection. They are not persistent
@@ -207,20 +208,53 @@ need a live-server check.
   Invalid JSON, wrong-shaped records/lists, or unreadable existing files retain
   the configured positions and log a warning. The entire load is rejected rather
   than silently discarding individual entries.
+- Before replacing an acknowledged save with different serialized bytes, the
+  addon prepares `garrysmod/data/devonsspawninfo.backup.json` and reads it back
+  exactly. This is one previous snapshot successfully loaded or saved by the
+  current server session. It may omit more recent intentional changes. The
+  canonical write is acknowledged only after a successful write result and
+  exact read-back; serialization must also pass the existing load validation.
+  A first save has no predecessor, so it leaves an existing orphan backup alone.
+  A valid mixed-case legacy load is backed up before creating canonical data,
+  and the legacy file stays untouched.
+- Backup preparation failures leave canonical data untouched. If canonical
+  writing fails after a verified backup, retries recheck and reuse that same
+  recovery copy. They never copy partial canonical bytes over it. During such a
+  retry, a prepared backup that changes or cannot be read blocks further writes until
+  the same bytes can be verified again. Accepted edits remain in memory and
+  receive the existing warning when saving cannot be verified.
+- If both the newly serialized data and canonical bytes exactly match the last
+  acknowledged snapshot, the save succeeds without rewriting either file.
+  This includes byte-identical shutdown saves, preserving the older backup.
+  Different JSON formatting or ordering is not treated as byte identity.
 - After a failed load, saving is disabled for that server session so shutdown
   cannot overwrite the recoverable file with defaults. Admin spawn commands
   still work in memory, but those edits are **not saved**. The admin receives an
   explicit session-only warning with each accepted edit. Back up and repair
   the reported DATA file while the server is stopped, then restart to re-enable
   saving. To deliberately start fresh, move the backed-up file out of DATA
-  before restarting; check both filename spellings if both exist.
+  before restarting; check both filename spellings if both exist. A backup is
+  never loaded automatically and does not bypass this lockout.
 - A shutdown before initialization, invalid runtime spawn data, or serialization
   failure also skips writing. Write failures are reported without a success
   message. An immediate save failure keeps the accepted edit in memory and warns
   its admin; the next successful edit or clean shutdown can retry saving. Empty
   removals, non-admin requests, unrelated chat and event cancellation do not
-  trigger writes. Writes are not atomic backups: crashes, disk failures, and
-  external edits made while the server is running are not protected by this validation.
+  trigger writes. The backup is not an atomic transaction or a durability
+  guarantee. Immediate read-back cannot prove that bytes will survive power
+  loss, device failure or external edits while the server is running.
+
+To recover deliberately, stop the server and preserve separate copies of the
+canonical file, backup and any mixed-case legacy file. Inspect the backup you
+intend to restore, then copy its contents to the lowercase canonical filename
+while retaining those copies. Restart and check the expected positions and
+saving. Do not delete canonical data merely to trigger a legacy fallback.
+
+Local fault-injection tests exercise truncating writes, false successes,
+read-back failures, repeated retries and actual admin/encounter handlers. Native
+Vector JSON, DATA reads/writes and recovery still need a disposable Garry's Mod
+server check, including a case-sensitive filesystem. These tests do not simulate
+power-loss durability; do not crash a production server to test it.
 
 ## Interaction and event lifecycle
 
@@ -349,6 +383,10 @@ DFrame and DLabel Think behavior remains responsible for their normal updates.
 Only in-memory file/codec doubles and test fixtures are used; the tests never
 read or write a server's DATA directory. They exercise the addon at the codec
 boundary, not Garry's Mod's actual JSON parser or filesystem.
+Backup checks tie encoded tokens to detached sparse-Vector snapshots and record
+the order of file operations. They inject partial and complete writes with
+failed returns, read errors and changed recovery copies, checking exact bytes
+before retries and preserving normal admin/encounter behavior.
 
 The suite exits nonzero on failure. The harness supports Lua
 5.1 and newer; its small source adapter translates GLua operators/comments.
@@ -376,13 +414,16 @@ test:
    and re-add them. Confirm there are no Lua errors or duplicate map entries.
 6. On a disposable server, add/remove each spawn type and check that
    `devonsspawninfo.json` changes before shutdown. Restart and confirm the edited
-   positions reload, including on a case-sensitive Linux server.
+   positions reload, including on a case-sensitive Linux server. Make another
+   changed save and confirm `devonsspawninfo.backup.json` contains its previous
+   acknowledged snapshot; a byte-identical shutdown must retain that backup.
 7. Rename the configured event on a disposable server, then check that its
    activators appear and its dialogue, enemies and completion still work.
 8. On a disposable server with a backup, try malformed saved JSON. Confirm the
    configured positions work, a warning appears, and shutdown leaves the bad
-   file unchanged even after admin edits. Repair the file while stopped and
-   restart; confirm loading and saving resume. Check the mixed-case fallback
+   file and backup unchanged even after admin edits. Use the deliberate recovery
+   steps above while stopped, then restart; confirm loading and saving resume.
+   Check the mixed-case fallback
    separately with the lowercase file absent.
 9. Start an event and confirm its passive progress panel updates after each
    tracked kill. Join from another client mid-event, remove a tracked enemy to
@@ -413,7 +454,7 @@ test:
 
 ## Remaining follow-ups
 
-- Consider an atomic/backup write flow to protect against interrupted writes
+- Verify previous-save recovery and native DATA read-back on a disposable server
 - Exercise live Lua hot-reload during an active encounter; local round state is
   intentionally not persisted across script reloads
 - Verify native dialogue wrapping, scrolling, focus and model framing with the

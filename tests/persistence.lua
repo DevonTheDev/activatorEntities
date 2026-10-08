@@ -1,9 +1,13 @@
 -- These doubles exercise the addon at the file/codec boundary, not GMod's JSON
 -- parser. Real Vector JSON round-trips still require an in-engine smoke test.
 return function(gmod, test, eq)
-    local canonical, legacy = "devonsspawninfo.json", "DevonsSpawnInfo.json"
+    local newCodec=dofile("tests/spawn-storage-codec.lua")
+    local canonical, legacy, backup = "devonsspawninfo.json", "DevonsSpawnInfo.json", "devonsspawninfo.backup.json"
     local function storage(env, files, decoded)
-        local state = {files=files or {}, reads={}, writes={}, decoded=decoded, prints={}}
+        local state = {files=files or {}, reads={}, writes={}, canonicalWrites={}, backupWrites={}, prints={}}
+        local codec=newCodec(env,eq); state.codec=codec
+        local source=state.files[canonical] or state.files[legacy]
+        if source then codec.remember(source,decoded) end
         env.print = function(text) state.prints[#state.prints + 1] = text end
         env.file.Exists = function(path, realm)
             eq(realm, "DATA"); return state.files[path] ~= nil
@@ -16,7 +20,11 @@ return function(gmod, test, eq)
         end
         env.file.Write = function(path, content)
             assert(type(content) == "string", "file.Write requires a string")
-            state.writes[#state.writes + 1] = {path=path, content=content}
+            local write={path=path, content=content}
+            state.writes[#state.writes + 1] = write
+            local destination=path == canonical and state.canonicalWrites or state.backupWrites
+            if path ~= canonical then eq(path,backup) end
+            destination[#destination + 1] = write
             if state.writeError then error("write failed") end
             if state.writeFails then return false end
             state.files[path:lower()] = content
@@ -27,14 +35,14 @@ return function(gmod, test, eq)
             eq(ignoreLimits == true, false, "keep GMod JSON limits enabled")
             eq(ignoreConversions == true, false, "preserve numeric-key conversion")
             if state.decodeError then error("decode failed") end
-            return state.decoded
+            return codec.decode(json, ignoreLimits, ignoreConversions)
         end
         env.util.TableToJSON = function(value)
-            state.encoded = value
+            state.encodeInput = value; state.encoded = codec.copy(value)
             if state.encodeError then error("encode failed") end
             if state.encodeFails then return nil end
             if state.encodeEmpty then return "" end
-            return '{"fixture":"serialized spawn positions"}'
+            return codec.encode(value)
         end
         return state
     end
@@ -59,7 +67,7 @@ return function(gmod, test, eq)
         env.fire("Initialize"); eq(env.SpawnPositions, defaults)
         env.fire("ShutDown")
         eq(#state.writes, 1); eq(state.writes[1].path, canonical)
-        eq(state.encoded, defaults); eq(#env.errors, 0)
+        eq(state.encodeInput, defaults); state.codec.same(state.encoded, defaults); eq(#env.errors, 0)
         eq(env.converted, nil, "serialized state must not leak into a global")
     end)
     test("shutdown before initialization leaves saved data untouched", function()
@@ -69,28 +77,45 @@ return function(gmod, test, eq)
     test("canonical saved sparse maps and Vector positions load unchanged", function()
         local env=gmod.new(); local data=valid(env)
         local state=storage(env, {[canonical]='{"4":{"map":"gm_construct","enemySpawnPositions":{"10":"[1 2 3]"},"activatorSpawnPositions":{"20":"[4 5 6]"}}}'}, data)
-        env.fire("Initialize"); eq(env.SpawnPositions, data)
+        env.fire("Initialize"); state.codec.same(env.SpawnPositions, data)
+        assert(not rawequal(env.SpawnPositions,data), "load returns a detached table")
         eq(state.reads[1], canonical); eq(#state.reads, 1)
-        eq(env.returnSpawnPositions("gm_construct"), data[4].enemySpawnPositions[10])
-        eq(env.returnActivatorSpawns("gm_construct"), data[4].activatorSpawnPositions[20])
+        local loaded=env.SpawnPositions; local originalBytes=state.files[canonical]
+        assert(not rawequal(loaded[4].enemySpawnPositions[10],data[4].enemySpawnPositions[10]), "loaded Vector is detached")
+        eq(env.returnSpawnPositions("gm_construct"), loaded[4].enemySpawnPositions[10])
+        eq(env.returnActivatorSpawns("gm_construct"), loaded[4].activatorSpawnPositions[20])
         local ply, enemies=env.start(); eq(#enemies, 5)
         ply.admin=true; env.fire("PlayerSay", ply, "!setEnemySpawn")
-        eq(data[4].enemySpawnPositions[11], ply:GetPos())
+        eq(loaded[4].enemySpawnPositions[11], ply:GetPos())
+        eq(data[4].enemySpawnPositions[11], nil, "saved snapshot is not aliased to loaded edits")
+        state.codec.same(state.codec.decode(state.files[backup]), data)
+        eq(state.files[backup],originalBytes,"backup contains the original bytes")
         env.fire("PlayerSay", ply, "!removeEnemySpawn")
-        eq(data[4].enemySpawnPositions[11], nil)
-        eq(data[4].enemySpawnPositions[10].x, 1)
-        env.fire("ShutDown"); eq(state.encoded, data); eq(#state.writes, 3, "two admin edits and shutdown each save")
+        eq(loaded[4].enemySpawnPositions[11], nil)
+        eq(loaded[4].enemySpawnPositions[10].x, 1)
+        eq(#state.canonicalWrites, 2); eq(#state.backupWrites, 2); eq(#state.writes, 4)
+        local predecessor=state.files[backup]
+        state.codec.same(state.codec.decode(predecessor)[4].enemySpawnPositions[11], ply:GetPos())
+        env.fire("ShutDown"); eq(state.encodeInput, loaded); state.codec.same(state.encoded, loaded)
+        eq(#state.writes, 4, "byte-identical shutdown verifies the saved bytes without rewriting")
+        eq(state.files[backup], predecessor, "shutdown retains the previous changed save")
     end)
     test("historical mixed-case file loads only when canonical file is absent", function()
         local env=gmod.new(); local data=valid(env); local state=storage(env, {[legacy]="legacy bytes"}, data)
-        env.fire("Initialize"); eq(env.SpawnPositions, data); eq(state.reads[1], legacy)
-        env.fire("ShutDown"); eq(state.writes[1].path, canonical)
+        env.fire("Initialize"); state.codec.same(env.SpawnPositions, data)
+        assert(not rawequal(env.SpawnPositions,data), "load returns a detached table"); eq(state.reads[1], legacy)
+        env.fire("ShutDown"); eq(#state.writes, 2)
+        eq(state.writes[1].path, backup); eq(state.writes[1].content, "legacy bytes")
+        eq(state.writes[2].path, canonical); eq(state.files[backup], "legacy bytes")
+        eq(#state.canonicalWrites, 1); eq(#state.backupWrites, 1)
+        state.codec.same(state.codec.decode(state.files[canonical]),data)
         eq(state.files[legacy], "legacy bytes", "legacy source is not modified or removed")
     end)
     test("canonical file takes precedence when both filenames exist", function()
         local env=gmod.new(); local data=valid(env)
         local state=storage(env, {[canonical]="current bytes", [legacy]="old bytes"}, data)
-        env.fire("Initialize"); eq(env.SpawnPositions, data)
+        env.fire("Initialize"); state.codec.same(env.SpawnPositions, data)
+        assert(not rawequal(env.SpawnPositions,data), "load returns a detached table")
         eq(state.decodeInput, "current bytes"); eq(#state.reads, 1)
     end)
     test("invalid canonical file cannot fall back to a stale mixed-case copy", function()
@@ -150,10 +175,13 @@ return function(gmod, test, eq)
         test("accept deliberately empty " .. (emptyRoot and "map configuration" or "spawn lists"), function()
             local env=gmod.new(); local data=emptyRoot and {} or {{map="gm_construct", enemySpawnPositions={}, activatorSpawnPositions={}}}
             local state=storage(env, {[canonical]="empty configuration"}, data)
-            env.fire("Initialize"); eq(env.SpawnPositions, data)
+            env.fire("Initialize"); state.codec.same(env.SpawnPositions, data)
+            assert(not rawequal(env.SpawnPositions,data), "load returns a detached table")
             eq(env.returnSpawnPositions("gm_construct"), nil); eq(env.returnActivatorSpawns("gm_construct"), nil)
             env.fireTimer("activatorSpawner"); eq(#env.ents.FindByClass("activatorent"), 0)
-            env.fire("ShutDown"); eq(state.encoded, data); eq(#state.writes, 1)
+            env.fire("ShutDown"); eq(state.encodeInput, env.SpawnPositions); state.codec.same(state.encoded, data)
+            eq(#state.writes, 0, "an acknowledged identical empty save does not rotate or rewrite")
+            eq(state.files[canonical], "empty configuration"); eq(state.files[backup], nil)
         end)
     end
     test("invalid runtime spawn edits never replace a previously valid save", function()
@@ -185,10 +213,10 @@ return function(gmod, test, eq)
                 local key=kind == "Activator" and "activatorSpawnPositions" or "enemySpawnPositions"
                 env.fire("PlayerSay", admin, "!" .. operation .. kind .. "Spawn")
                 eq(#state.writes, 1, "persist the accepted edit before shutdown")
-                eq(state.writes[1].path, canonical); eq(state.encoded, env.SpawnPositions)
+                eq(state.writes[1].path, canonical); eq(state.encodeInput, env.SpawnPositions); state.codec.same(state.encoded, env.SpawnPositions)
                 eq(#env.SpawnPositions[1][key], operation == "set" and 4 or 2)
-                if operation == "set" then eq(state.encoded[1][key][4], admin:GetPos()) end
-                eq(#admin.chats, 1); assert(not admin.chats[1]:find("in memory only", 1, true))
+                if operation == "set" then state.codec.same(state.encoded[1][key][4], admin:GetPos()); assert(not rawequal(state.encoded[1][key][4], admin:GetPos())) end
+                eq(#admin.chats, 1); assert(not admin.chats[1]:find("remains in memory", 1, true))
             end)
         end
     end
@@ -198,7 +226,7 @@ return function(gmod, test, eq)
             local admin=env.entity("player"); admin.admin=true
             env.fire("PlayerSay", admin, "!setEnemySpawn")
             eq(#env.SpawnPositions[1].enemySpawnPositions, 4)
-            eq(#admin.chats, 1); assert(admin.chats[1]:find("in memory only", 1, true), "explain that persistence failed")
+            eq(#admin.chats, 1); assert(admin.chats[1]:find("remains in memory; saving failed, is disabled or could not be verified", 1, true), "explain that persistence failed")
             assert(#env.errors > 0); eq(state.files[canonical], nil)
         end)
     end
@@ -207,14 +235,14 @@ return function(gmod, test, eq)
         local admin=env.entity("player"); admin.admin=true
         env.fire("PlayerSay", admin, "!setEnemySpawn")
         eq(#state.writes, 0); eq(state.files[canonical], "recoverable")
-        assert(admin.chats[1]:find("in memory only", 1, true))
+        assert(admin.chats[1]:find("remains in memory; saving failed, is disabled or could not be verified", 1, true))
     end)
     test("admin edit before initialization is session-only and never writes", function()
         local env=gmod.new(); local state=storage(env, {[canonical]="recoverable"})
         local admin=env.entity("player"); admin.admin=true
         env.fire("PlayerSay", admin, "!setActivatorSpawn")
         eq(#state.writes, 0); eq(state.files[canonical], "recoverable")
-        assert(admin.chats[1]:find("in memory only", 1, true))
+        assert(admin.chats[1]:find("remains in memory; saving failed, is disabled or could not be verified", 1, true))
     end)
     test("non-admin, unrelated, empty-removal and stop commands do not trigger writes", function()
         local env=gmod.new(); local state=storage(env); env.fire("Initialize")
@@ -231,7 +259,7 @@ return function(gmod, test, eq)
         local admin=env.entity("player"); admin.admin=true
         env.fire("PlayerSay", admin, "!setEnemySpawn"); eq(#state.writes, 1)
         state.writeFails=false; env.fire("ShutDown")
-        eq(#state.writes, 2); eq(state.encoded, env.SpawnPositions)
+        eq(#state.writes, 2); eq(state.encodeInput, env.SpawnPositions); state.codec.same(state.encoded, env.SpawnPositions)
         eq(#state.encoded[1].enemySpawnPositions, 4); assert(state.files[canonical])
     end)
 

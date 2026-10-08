@@ -2,7 +2,8 @@
 -- The explicit API, storage and deferred-removal doubles prove calls and state,
 -- not native wall-clock delays, network delivery, Derma rendering or DATA JSON.
 return function(gmod,test,eq)
-    local canonical="devonsspawninfo.json"
+    local newCodec=dofile("tests/spawn-storage-codec.lua")
+    local canonical,backup="devonsspawninfo.json","devonsspawninfo.backup.json"
     local function contains(text,fragment)
         assert(text:find(fragment,1,true),"missing " .. fragment .. " in " .. text)
     end
@@ -53,13 +54,27 @@ return function(gmod,test,eq)
     end
     local function fixture(mode)
         local env=gmod.new()
-        local ioState={files={},reads=0,writes=0,encodes=0}
+        local ioState={files={},exists=0,reads=0,writes=0,canonicalWrites=0,backupWrites=0,encodes=0,decodes=0,encoded={},writeLog={}}
+        local codec=newCodec(env,eq); ioState.codec=codec
         env.print=function() end
-        env.file.Exists=function(path,realm) eq(realm,"DATA"); return ioState.files[path] ~= nil end
+        env.file.Exists=function(path,realm)
+            eq(realm,"DATA"); ioState.exists=ioState.exists+1; return ioState.files[path] ~= nil
+        end
         env.file.Read=function(path,realm) eq(realm,"DATA"); ioState.reads=ioState.reads+1; return ioState.files[path] end
-        env.file.Write=function(path,contents) ioState.writes=ioState.writes+1; ioState.files[path]=contents; return true end
-        env.util.TableToJSON=function() ioState.encodes=ioState.encodes+1; return '{"fixture":' .. ioState.encodes .. '}' end
-        env.util.JSONToTable=function() return nil end
+        env.file.Write=function(path,contents)
+            ioState.writes=ioState.writes+1
+            if path == canonical then ioState.canonicalWrites=ioState.canonicalWrites+1
+            else eq(path,backup); ioState.backupWrites=ioState.backupWrites+1 end
+            ioState.writeLog[#ioState.writeLog+1]={path=path,contents=contents}
+            ioState.files[path]=contents; return true
+        end
+        env.util.TableToJSON=function(value)
+            ioState.encodes=ioState.encodes+1; ioState.encoded[#ioState.encoded+1]=codec.copy(value)
+            return codec.encode(value)
+        end
+        env.util.JSONToTable=function(...)
+            ioState.decodes=ioState.decodes+1; return codec.decode(...)
+        end
         if mode == "rejected storage" then ioState.files[canonical]="invalid but recoverable data" end
         if mode ~= "uninitialized storage" then env.fire("Initialize") end
         local current={map="gm_construct",enemySpawnPositions={[2]=env.Vector(10,20,30)},
@@ -211,7 +226,15 @@ return function(gmod,test,eq)
             end
             local oldPoint=current.activatorSpawnPositions[11]
             local point,enemyPoint=editAndQueue(env,admin,current)
-            eq(ioState.writes,2,"both real position edits persist")
+            eq(ioState.canonicalWrites,2,"both real position edits persist")
+            eq(ioState.backupWrites,1); eq(ioState.writes,3,"include the previous-save backup write")
+            eq(ioState.encodes,2); eq(ioState.decodes,2)
+            eq(ioState.writeLog[1].path,canonical); eq(ioState.writeLog[2].path,backup); eq(ioState.writeLog[3].path,canonical)
+            eq(ioState.files[backup],ioState.writeLog[1].contents,"backup preserves exact first-edit bytes")
+            ioState.codec.same(ioState.codec.decode(ioState.files[backup]),ioState.encoded[1])
+            ioState.codec.same(ioState.codec.decode(ioState.files[canonical]),env.SpawnPositions)
+            coords(ioState.encoded[1][4].activatorSpawnPositions[11],point)
+            coords(ioState.encoded[1][4].enemySpawnPositions[2],env.Vector(10,20,30))
             for _,actor in ipairs(old) do coords(actor:GetPos(),oldPoint); eq(actor.EventIdentifier,"Raid") end
             eq(env.timers.activatorSpawner.stopped,true)
             local unrelated=env.entity("npc_zombie"); local prop=env.entity("prop_physics")

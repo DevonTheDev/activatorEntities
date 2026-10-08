@@ -339,7 +339,7 @@ end)
 local saveSpawnPositions
 local function confirmSpawnEdit(sender, message)
     if not saveSpawnPositions() then
-        message = message .. " This change is in memory only; saving failed or is disabled. Check the server console."
+        message = message .. " This change remains in memory; saving failed, is disabled or could not be verified. Check the server console."
     end
     sender:ChatPrint(message)
 end
@@ -440,7 +440,10 @@ end)
 -- file.Write lowercases DATA paths; use the same name when reading on Linux.
 local spawnDataFile = "devonsspawninfo.json"
 local legacySpawnDataFile = "DevonsSpawnInfo.json"
+local spawnBackupFile = "devonsspawninfo.backup.json"
 local canSaveSpawnPositions = false
+-- Only acknowledged, immutable bytes may become the next recovery copy.
+local lastGoodSpawnBytes, preparedSpawnBackupBytes
 
 -- Validate without rebuilding lists: preserve sparse keys and native Vectors
 -- restored by util.JSONToTable from GMod's existing "[x y z]" representation.
@@ -454,6 +457,36 @@ local function validSpawnPositions(positions)
             return false
         end
     end
+    return true
+end
+
+-- Keep the loader and serialized-candidate checks on the same JSON defaults.
+local function decodeSpawnPositions(bytes)
+    local decoded, positions = pcall(util.JSONToTable, bytes)
+    if decoded and validSpawnPositions(positions) then return positions end
+end
+
+local function spawnFileMatches(filename, bytes)
+    local read, contents = pcall(file.Read, filename, "DATA")
+    return read and contents == bytes
+end
+
+local function writeVerifiedSpawnFile(filename, bytes)
+    local written, success = pcall(file.Write, filename, bytes)
+    return written and success == true and spawnFileMatches(filename, bytes)
+end
+
+local function prepareSpawnBackup()
+    if not lastGoodSpawnBytes then return true end
+    if spawnFileMatches(spawnBackupFile, lastGoodSpawnBytes) then
+        preparedSpawnBackupBytes = lastGoodSpawnBytes
+        return true
+    end
+    -- A failed canonical write may leave this as the sole recovery copy.
+    -- An unreadable or changed prepared copy is not permission to overwrite it.
+    if preparedSpawnBackupBytes == lastGoodSpawnBytes then return false end
+    if not writeVerifiedSpawnFile(spawnBackupFile, lastGoodSpawnBytes) then return false end
+    preparedSpawnBackupBytes = lastGoodSpawnBytes
     return true
 end
 
@@ -481,11 +514,21 @@ saveSpawnPositions = function()
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not serialize spawn positions; existing data was left untouched.\n")
         return false
     end
-    local written, success = pcall(file.Write, spawnDataFile, converted)
-    if not written or success ~= true then
-        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not save spawn positions to " .. spawnDataFile .. ".\n")
+    if not decodeSpawnPositions(converted) then
+        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not validate serialized spawn positions for " .. spawnDataFile .. "; existing data was left untouched.\n")
         return false
     end
+    -- Byte equality only: differently ordered/formatted JSON is a changed save.
+    if converted == lastGoodSpawnBytes and spawnFileMatches(spawnDataFile, lastGoodSpawnBytes) then return true end
+    if not prepareSpawnBackup() then
+        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not prepare or verify spawn backup " .. spawnBackupFile .. "; " .. spawnDataFile .. " was left untouched.\n")
+        return false
+    end
+    if not writeVerifiedSpawnFile(spawnDataFile, converted) then
+        ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not save and verify spawn positions in " .. spawnDataFile .. ".\n")
+        return false
+    end
+    lastGoodSpawnBytes = converted
     print("DEVONS ROLEPLAY ADDON - The spawn positions table was successfully saved")
     return true
 end
@@ -497,6 +540,7 @@ end)
 hook.Add("Initialize", "loadTheTables", function()
     spawnInspections = {}
     canSaveSpawnPositions = false
+    lastGoodSpawnBytes, preparedSpawnBackupBytes = nil, nil
     local read, JSONData, filename = pcall(readSpawnData)
     if not read or (filename and type(JSONData) ~= "string") then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not read saved spawn positions. Using configured positions; saving is disabled. Back up and repair the DATA file, then restart.\n")
@@ -506,12 +550,13 @@ hook.Add("Initialize", "loadTheTables", function()
         canSaveSpawnPositions = true
         return
     end
-    local decoded, positions = pcall(util.JSONToTable, JSONData)
-    if not decoded or not validSpawnPositions(positions) then
+    local positions = decodeSpawnPositions(JSONData)
+    if not positions then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Invalid spawn positions in " .. filename .. ". Using configured positions; saving is disabled. Back up and repair the DATA file, then restart.\n")
         return
     end
     SpawnPositions = positions
+    lastGoodSpawnBytes = JSONData
     canSaveSpawnPositions = true
     print("DEVONS ROLEPLAY ADDON - The spawn positions table was successfully loaded")
 end)

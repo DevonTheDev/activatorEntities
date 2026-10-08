@@ -1,21 +1,33 @@
 -- Exercise the actual menu and server receivers through the existing doubles.
 -- ChatPrint calls and transferred fields are observable; native delivery is not.
 return function(gmod, test, eq)
+    local newCodec=dofile("tests/spawn-storage-codec.lua")
+    local canonical,backup="devonsspawninfo.json","devonsspawninfo.backup.json"
     local expired = "This interaction expired. Use the activator again."
     local missing = "No enemy spawn position is available. Ask an admin to fix it, then use the activator again."
     local started = "2 enemies have been spawned. Eliminate them."
 
     local function storage(env)
-        local state = {reads=0, writes=0, encodes=0}
-        env.file.Exists = function() return false end
-        env.file.Read = function() state.reads=state.reads+1 end
+        local state = {files={}, exists=0, reads=0, writes=0, canonicalWrites=0, backupWrites=0, encodes=0, decodes=0}
+        local codec=newCodec(env,eq); state.codec=codec
+        env.file.Exists = function(path, realm)
+            eq(realm,"DATA"); state.exists=state.exists+1; return state.files[path] ~= nil
+        end
+        env.file.Read = function(path, realm)
+            eq(realm,"DATA"); state.reads=state.reads+1; return state.files[path]
+        end
         env.file.Write = function(path, content)
             state.writes=state.writes+1; state.path=path; state.content=content
-            return true
+            if path == canonical then state.canonicalWrites=state.canonicalWrites+1
+            else eq(path,backup); state.backupWrites=state.backupWrites+1 end
+            state.files[path]=content; return true
         end
         env.util.TableToJSON = function(value)
-            state.encodes=state.encodes+1; state.value=value
-            return '{"fixture":"spawn positions"}'
+            state.encodes=state.encodes+1; state.value=codec.copy(value)
+            return codec.encode(value)
+        end
+        env.util.JSONToTable = function(...)
+            state.decodes=state.decodes+1; return codec.decode(...)
         end
         env.fire("Initialize")
         return state
@@ -94,7 +106,10 @@ return function(gmod, test, eq)
                 info=ent.NPCInfo, model=ent:GetModel(), pos=ent:GetPos()}
         end
         for _,ply in ipairs(env.player.GetAll()) do state.chats[ply]=#ply.chats end
-        if ioState then state.reads=ioState.reads; state.writes=ioState.writes; state.encodes=ioState.encodes end
+        if ioState then
+            state.exists=ioState.exists; state.reads=ioState.reads; state.writes=ioState.writes
+            state.encodes=ioState.encodes; state.decodes=ioState.decodes; state.files=copy(ioState.files)
+        end
         return state
     end
     local function unchanged(env, state, ioState, requester, notice, diagnostic)
@@ -122,6 +137,7 @@ return function(gmod, test, eq)
         end
         if ioState then
             eq(ioState.reads,state.reads); eq(ioState.writes,state.writes); eq(ioState.encodes,state.encodes)
+            eq(ioState.exists,state.exists); eq(ioState.decodes,state.decodes); sameData(ioState.files,state.files)
         end
     end
 
@@ -151,14 +167,17 @@ return function(gmod, test, eq)
                 eq(#server.SpawnPositions[1].enemySpawnPositions,1)
                 eq(server.SpawnPositions[1].enemySpawnPositions[1],admin:GetPos())
                 eq(server.totalEnemies,0,"actual admin repair does not auto-start")
-                eq(ioState.writes,1); eq(ioState.encodes,1); eq(ioState.path,"devonsspawninfo.json")
+                eq(ioState.writes,1); eq(ioState.canonicalWrites,1); eq(ioState.backupWrites,0)
+                eq(ioState.encodes,1); eq(ioState.path,canonical)
+                ioState.codec.same(ioState.codec.decode(ioState.files[canonical]),server.SpawnPositions)
+                assert(not admin.chats[#admin.chats]:find("remains in memory",1,true),"repair save is acknowledged")
                 local repaired=snapshot(server,ioState)
                 server.deliver(request,ply)
                 unchanged(server,repaired,ioState,nil,nil)
             end
             local chats={}
             for _,player in ipairs(server.player.GetAll()) do chats[player]=#player.chats end
-            local writes,encodes=ioState.writes,ioState.encodes
+            local writes,encodes,reads,decodes,exists=ioState.writes,ioState.encodes,ioState.reads,ioState.decodes,ioState.exists
             frame,button=open(server,client,ply,ent)
             click(server,client,ply,frame,button)
             eq(server.totalEnemies,2); eq(#server.ents.FindByClass("activatorent"),0)
@@ -178,6 +197,7 @@ return function(gmod, test, eq)
             assert(afterStatus:find("Selected ready batch: none",1,true))
             assert(afterStatus:find('Pending next batch: "Raid"',1,true))
             eq(ioState.writes,writes); eq(ioState.encodes,encodes)
+            eq(ioState.reads,reads); eq(ioState.decodes,decodes); eq(ioState.exists,exists)
             eq(#observer.chats,chats[observer]+1)
         end)
     end

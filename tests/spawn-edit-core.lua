@@ -1,17 +1,33 @@
--- Exercise the real chat handler. File/codec doubles only count persistence;
+-- Exercise the real chat handler with byte-aware file/codec doubles;
 -- native ChatPrint rendering and Vector JSON still need a GMod smoke test.
 return function(gmod, test, eq)
+    local newCodec=dofile("tests/spawn-storage-codec.lua")
+    local canonical,backup="devonsspawninfo.json","devonsspawninfo.backup.json"
     local kinds = {
         {name="enemy", field="enemySpawnPositions", remove="!removeEnemySpawn"},
         {name="activator", field="activatorSpawnPositions", remove="!removeActivatorSpawn"},
     }
     local function setup(kind, keys)
         local env=gmod.new()
-        local saves={writes=0, serializations=0}
+        local saves={writes=0, canonicalWrites=0, backupWrites=0, reads=0, decodes=0, serializations=0, files={}}
+        local codec=newCodec(env,eq); saves.codec=codec
         env.print=function() end
-        env.file.Exists=function() return false end
-        env.file.Write=function() saves.writes=saves.writes+1; return true end
-        env.util.TableToJSON=function() saves.serializations=saves.serializations+1; return "fixture" end
+        env.file.Exists=function(path,realm) eq(realm,"DATA"); return saves.files[path] ~= nil end
+        env.file.Read=function(path,realm)
+            eq(realm,"DATA"); saves.reads=saves.reads+1; return saves.files[path]
+        end
+        env.file.Write=function(path,bytes)
+            saves.writes=saves.writes+1
+            if path == canonical then saves.canonicalWrites=saves.canonicalWrites+1
+            else eq(path,backup); saves.backupWrites=saves.backupWrites+1 end
+            saves.files[path]=bytes; return true
+        end
+        env.util.JSONToTable=function(...)
+            saves.decodes=saves.decodes+1; return codec.decode(...)
+        end
+        env.util.TableToJSON=function(value)
+            saves.serializations=saves.serializations+1; return codec.encode(value)
+        end
         env.fire("Initialize")
         local admin=env.entity("player"); admin.admin=true
         local positions={}
@@ -39,11 +55,12 @@ return function(gmod, test, eq)
     end
     local function unchanged(env, admin, kind, positions, saves, command)
         local expected={}; for key, value in pairs(positions) do expected[key]=value end
-        local writes, serializations=saves.writes, saves.serializations
+        local writes, serializations, reads, decodes=saves.writes, saves.serializations, saves.reads, saves.decodes
         eq(env.fire("PlayerSay", admin, command), "", "recognized indexed request is private")
         for key, value in pairs(expected) do eq(positions[key], value, "retain key " .. tostring(key)) end
         for key, value in pairs(positions) do eq(expected[key], value, "no invented key") end
         eq(saves.writes, writes); eq(saves.serializations, serializations)
+        eq(saves.reads, reads); eq(saves.decodes, decodes)
         bounded(admin.chats)
     end
 
@@ -108,9 +125,12 @@ return function(gmod, test, eq)
         test("indexed " .. kind.name .. " deletion leaves max-key allocation intact", function()
             local env, admin, positions, saves=setup(kind)
             inspect(env, admin, kind); env.fire("PlayerSay", admin, kind.remove .. " 9")
+            local predecessor=saves.files[canonical]
             local add=kind.name == "enemy" and "!setEnemySpawn" or "!setActivatorSpawn"
             eq(env.fire("PlayerSay", admin, add), nil)
-            eq(positions[32], admin:GetPos()); eq(positions[9], nil); eq(saves.writes, 2)
+            eq(positions[32], admin:GetPos()); eq(positions[9], nil); eq(saves.canonicalWrites, 2); eq(saves.backupWrites, 1); eq(saves.writes, 3)
+            eq(saves.files[backup], predecessor, "retain the prior accepted removal")
+            eq(saves.codec.decode(saves.files[backup])[1][kind.field][32], nil)
         end)
         for _, literal in ipairs({"9223372036854775807", "1e100", "1.7976931348623157e308"}) do
             test("append " .. kind.name .. " rejects an unrepresentable successor without losing inspection: " .. literal, function()

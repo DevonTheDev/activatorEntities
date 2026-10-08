@@ -1,17 +1,33 @@
 -- Run the actual server chat handler with the existing GMod API doubles.
 -- Identity checks deliberately do not use Vector's coordinate equality.
 return function(gmod, test, eq)
+    local newCodec=dofile("tests/spawn-storage-codec.lua")
+    local canonical,backup="devonsspawninfo.json","devonsspawninfo.backup.json"
     local kinds={
         {name="enemy", field="enemySpawnPositions", move="!moveEnemySpawn", remove="!removeEnemySpawn"},
         {name="activator", field="activatorSpawnPositions", move="!moveActivatorSpawn", remove="!removeActivatorSpawn"},
     }
     local function setup(kind, keys)
         local env=gmod.new()
-        local saves={writes=0, encodes=0}
+        local saves={writes=0, canonicalWrites=0, backupWrites=0, reads=0, decodes=0, encodes=0, files={}}
+        local codec=newCodec(env,eq); saves.codec=codec
         env.print=function() end
-        env.file.Exists=function() return false end
-        env.file.Write=function() saves.writes=saves.writes+1; return true end
-        env.util.TableToJSON=function() saves.encodes=saves.encodes+1; return "fixture" end
+        env.file.Exists=function(path,realm) eq(realm,"DATA"); return saves.files[path] ~= nil end
+        env.file.Read=function(path,realm)
+            eq(realm,"DATA"); saves.reads=saves.reads+1; return saves.files[path]
+        end
+        env.file.Write=function(path,bytes)
+            saves.writes=saves.writes+1
+            if path == canonical then saves.canonicalWrites=saves.canonicalWrites+1
+            else eq(path,backup); saves.backupWrites=saves.backupWrites+1 end
+            saves.files[path]=bytes; return true
+        end
+        env.util.JSONToTable=function(...)
+            saves.decodes=saves.decodes+1; return codec.decode(...)
+        end
+        env.util.TableToJSON=function(value)
+            saves.encodes=saves.encodes+1; return codec.encode(value)
+        end
         env.fire("Initialize")
         local admin=env.entity("player"); admin.admin=true
         local positions={}
@@ -51,11 +67,12 @@ return function(gmod, test, eq)
     end
     local function rejected(env,admin,positions,saves,command)
         local before=snapshot(positions)
-        local writes,encodes=saves.writes,saves.encodes
+        local writes,encodes,reads,decodes=saves.writes,saves.encodes,saves.reads,saves.decodes
         local ok,result=pcall(env.fire,"PlayerSay",admin,command)
         assert(ok,"rejected move must not throw: " .. tostring(result))
         retained(positions,before)
         eq(saves.writes,writes); eq(saves.encodes,encodes)
+        eq(saves.reads,reads); eq(saves.decodes,decodes)
         eq(result,"","recognized move requests are private")
         for _,line in ipairs(admin and admin.chats or {}) do assert(#line <= 255,"bounded response") end
     end
@@ -94,7 +111,10 @@ return function(gmod, test, eq)
                 end
                 destination.x=999; eq(positions[key].x,100,"later player changes cannot alter the saved point")
                 positions[key].y=888; eq(destination.y,-200,"the saved point cannot alter the player")
-                eq(saves.writes,1); eq(saves.encodes,1)
+                local saved=saves.codec.decode(saves.files[canonical])[1][kind.field][key]
+                eq(saved.x,100); eq(saved.y,-200); eq(saved.z,300.25)
+                assert(env.isvector(saved)); assert(not rawequal(saved,positions[key]),"persisted Vector is detached")
+                eq(saves.writes,1); eq(saves.canonicalWrites,1); eq(saves.backupWrites,0); eq(saves.encodes,1)
                 assert(admin.chats[#admin.chats]:find("moved",1,true),"confirm the move")
             end)
         end

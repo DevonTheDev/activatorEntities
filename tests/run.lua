@@ -312,6 +312,8 @@ test("manually spawning with missing event definitions removes the unusable acti
     ent:Spawn(); eq(ent.valid, false)
 end)
 dofile("tests/persistence.lua")(gmod, test, eq)
+dofile("tests/save-backup-core.lua")(gmod, test, eq)
+dofile("tests/save-backup-workflow.lua")(gmod, test, eq)
 dofile("tests/progress.lua")(gmod, test, eq)
 dofile("tests/selection.lua")(gmod, test, eq)
 dofile("tests/catalog.lua")(gmod, test, eq)

@@ -1,7 +1,8 @@
 -- Exercise public chat, persistence and real encounter/client handlers. The
 -- existing GMod doubles do not prove native DATA encoding, physics or delivery.
 return function(gmod,test,eq)
-    local canonical="devonsspawninfo.json"
+    local newCodec=dofile("tests/spawn-storage-codec.lua")
+    local canonical,backup="devonsspawninfo.json","devonsspawninfo.backup.json"
     local kinds={
         {name="enemy",field="enemySpawnPositions",move="!moveEnemySpawn",remove="!removeEnemySpawn",add="!setEnemySpawn",first=2,key=10,last=27},
         {name="activator",field="activatorSpawnPositions",move="!moveActivatorSpawn",remove="!removeActivatorSpawn",add="!setActivatorSpawn",first=3,key=11,last=29},
@@ -42,25 +43,32 @@ return function(gmod,test,eq)
         return result
     end
     local function storage(env)
-        local state={files={},reads=0,encodes=0,writes={},encoded={}}
+        local state={files={},reads=0,decodes=0,encodes=0,writes={},canonicalWrites={},backupWrites={},encoded={}}
+        local codec=newCodec(env,eq); state.codec=codec
         env.print=function() end
         env.file.Exists=function(path,realm) eq(realm,"DATA"); return state.files[path] ~= nil end
         env.file.Read=function(path,realm)
             eq(realm,"DATA"); state.reads=state.reads+1; return state.files[path]
         end
         env.file.Write=function(path,contents)
-            state.writes[#state.writes+1]={path=path,contents=contents}
+            local write={path=path,contents=contents}
+            state.writes[#state.writes+1]=write
+            local destination=path == canonical and state.canonicalWrites or state.backupWrites
+            if path ~= canonical then eq(path,backup) end
+            destination[#destination+1]=write
             if state.failure == "write error" then error("synthetic write failure") end
             if state.failure == "write false" then return false end
             state.files[path]=contents; return true
         end
-        env.util.JSONToTable=function() return state.decoded end
+        env.util.JSONToTable=function(...)
+            state.decodes=state.decodes+1; return codec.decode(...)
+        end
         env.util.TableToJSON=function(value)
-            state.encodes=state.encodes+1; state.encoded[#state.encoded+1]=copy(value)
+            state.encodes=state.encodes+1; state.encoded[#state.encoded+1]=codec.copy(value)
             if state.failure == "encode error" then error("synthetic encode failure") end
             if state.failure == "encode nil" then return nil end
             if state.failure == "encode empty" then return "" end
-            return '{"fixture":' .. state.encodes .. '}'
+            return codec.encode(value)
         end
         return state
     end
@@ -130,10 +138,10 @@ return function(gmod,test,eq)
     end
     local function unchanged(env,ioState,callback)
         local positions=tree(env.SpawnPositions); local state=lifecycle(env)
-        local reads,encodes,writes,errors=ioState.reads,ioState.encodes,#ioState.writes,#env.errors
+        local reads,decodes,encodes,writes,errors=ioState.reads,ioState.decodes,ioState.encodes,#ioState.writes,#env.errors
         callback()
         sameTree(env.SpawnPositions,positions); sameLifecycle(env,state)
-        eq(ioState.reads,reads); eq(ioState.encodes,encodes); eq(#ioState.writes,writes); eq(#env.errors,errors)
+        eq(ioState.reads,reads); eq(ioState.decodes,decodes); eq(ioState.encodes,encodes); eq(#ioState.writes,writes); eq(#env.errors,errors)
     end
     local function status(env,admin)
         local before=#admin.chats; eq(say(env,admin,"!eventStatus"),"")
@@ -233,7 +241,32 @@ return function(gmod,test,eq)
                 move(env,admin,kind); remove(env,admin,kind); move(env,second,kind); remove(env,second,kind)
             end)
             inspect(env,admin,kind); remove(env,admin,kind)
-            eq(current[kind.field][kind.key],nil); eq(#ioState.writes,2)
+            eq(current[kind.field][kind.key],nil); eq(#ioState.canonicalWrites,2); eq(#ioState.backupWrites,1); eq(#ioState.writes,3)
+        end)
+
+        test("acknowledged same-coordinate " .. kind.name .. " move verifies bytes and still expires inspection",function()
+            local env,admin,second,_,ioState,current=fixture()
+            second:SetPos(env.Vector(601,602,603)); inspect(env,second,kind); move(env,second,kind)
+            local acknowledged=ioState.files[canonical]; local old=current[kind.field][kind.key]
+            inspect(env,admin,kind); inspect(env,second,kind)
+            local reads,decodes=ioState.reads,ioState.decodes
+            local message=move(env,second,kind)
+            assert(not message:find("remains in memory",1,true),"verification is an acknowledged save")
+            coords(current[kind.field][kind.key],old)
+            assert(not rawequal(current[kind.field][kind.key],old),"accepted move still replaces the Vector")
+            eq(ioState.encodes,2,"each accepted command enters the save path")
+            eq(ioState.decodes,decodes+1,"candidate is still checked")
+            eq(ioState.reads,reads+1,"current bytes are still verified")
+            eq(#ioState.canonicalWrites,1); eq(#ioState.backupWrites,0); eq(#ioState.writes,1)
+            eq(ioState.files[canonical],acknowledged); eq(ioState.files[backup],nil)
+            unchanged(env,ioState,function()
+                move(env,admin,kind); remove(env,admin,kind); move(env,second,kind); remove(env,second,kind)
+            end)
+            eq(env.fire("ShutDown"),nil); eq(ioState.encodes,3); eq(#ioState.writes,1)
+            inspect(env,admin,kind); remove(env,admin,kind)
+            eq(#ioState.canonicalWrites,2); eq(#ioState.backupWrites,1); eq(#ioState.writes,3)
+            eq(ioState.files[backup],acknowledged,"next changed save backs up the acknowledged point")
+            ioState.codec.same(ioState.codec.decode(ioState.files[backup]),ioState.encoded[1])
         end)
 
         for _,alias in ipairs({"player destination","old target"}) do
@@ -260,7 +293,7 @@ return function(gmod,test,eq)
                 eq(#ioState.writes,1)
                 unchanged(env,ioState,function() move(env,admin,kind,kind.first); remove(env,admin,kind,kind.first) end)
                 inspect(env,admin,kind); admin:SetPos(env.Vector(501,502,503)); move(env,admin,kind,kind.first)
-                coords(current[kind.field][kind.first],admin:GetPos()); eq(#ioState.writes,2)
+                coords(current[kind.field][kind.first],admin:GetPos()); eq(#ioState.canonicalWrites,2); eq(#ioState.backupWrites,1); eq(#ioState.writes,3)
             end)
         end
 
@@ -276,7 +309,7 @@ return function(gmod,test,eq)
             otherAdmin:SetPos(env.Vector(701,702,703)); move(env,otherAdmin,otherKind)
             coords(current[otherKind.field][otherKind.key],otherAdmin:GetPos())
             env.map="other_map"; remoteAdmin:SetPos(env.Vector(801,802,803)); move(env,remoteAdmin,kind)
-            coords(env.SpawnPositions[19][kind.field][kind.key],remoteAdmin:GetPos()); eq(#ioState.writes,3)
+            coords(env.SpawnPositions[19][kind.field][kind.key],remoteAdmin:GetPos()); eq(#ioState.canonicalWrites,3); eq(#ioState.backupWrites,2); eq(#ioState.writes,5)
         end)
 
         test("public " .. kind.name .. " move requires the current map and most recently inspected kind",function()
@@ -309,7 +342,7 @@ return function(gmod,test,eq)
                 local env,admin,second,_,ioState,current=fixture(); ioState.failure=failure
                 inspect(env,admin,kind); inspect(env,second,kind)
                 local old=current[kind.field][kind.key]; second:SetPos(env.Vector(601,602,603))
-                local text=move(env,second,kind); contains(text,"in memory only")
+                local text=move(env,second,kind); contains(text,"remains in memory; saving failed, is disabled or could not be verified")
                 coords(current[kind.field][kind.key],second:GetPos()); assert(not rawequal(current[kind.field][kind.key],old))
                 eq(ioState.encodes,1); eq(#ioState.writes,failure:find("write",1,true) and 1 or 0)
                 eq(ioState.files[canonical],nil)
@@ -327,7 +360,7 @@ return function(gmod,test,eq)
                 if mode == "uninitialized" then ioState.files[canonical]="recoverable existing data" end
                 local original=ioState.files[canonical]
                 inspect(env,admin,kind); inspect(env,second,kind); second:SetPos(env.Vector(401,402,403))
-                contains(move(env,second,kind),"in memory only"); coords(current[kind.field][kind.key],second:GetPos())
+                contains(move(env,second,kind),"remains in memory; saving failed, is disabled or could not be verified"); coords(current[kind.field][kind.key],second:GetPos())
                 unchanged(env,ioState,function() move(env,admin,kind); remove(env,admin,kind) end)
                 env.fire("ShutDown"); eq(ioState.encodes,0); eq(#ioState.writes,0); eq(ioState.files[canonical],original)
             end)
