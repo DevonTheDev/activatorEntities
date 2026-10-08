@@ -279,10 +279,83 @@ local function printSpawnConditions(ply, count, readyName)
         .. " (required on use).")
 end
 
+-- Ownership and all rendered text are copied before ChatPrint can reenter.
+-- Indices describe this snapshot only; the engine can reuse them after deletion.
+local function enemyLocationNumber(value)
+    if math.abs(value) < 1000000000 then return string.format("%.0f", math.floor(value + 0.5)) end
+    return string.format("%.3g", value)
+end
+
+local function enemyLocationPosition(enemy)
+    local ok, text = pcall(function()
+        local position = enemy:GetPos()
+        if not isvector(position) or not finiteStatusNumber(position.x)
+            or not finiteStatusNumber(position.y) or not finiteStatusNumber(position.z) then return nil end
+        return "approx rounded world position (" .. enemyLocationNumber(position.x) .. ", "
+            .. enemyLocationNumber(position.y) .. ", " .. enemyLocationNumber(position.z) .. ")"
+    end)
+    return ok and text or "world position unavailable"
+end
+
+local function enemyLocationName(name)
+    local display = name:gsub("[%c]", " ")
+    if #display > 160 then
+        local last = 157
+        while last > 0 and display:byte(last + 1) >= 128 and display:byte(last + 1) <= 191 do last = last - 1 end
+        display = display:sub(1, last) .. "..."
+    end
+    return 'Active encounter: "' .. display .. '".'
+end
+
+local function printEventEnemies(ply, text)
+    local argument = text:match("^!listEventEnemies%s*(.-)%s*$")
+    local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
+    local usage = "Usage: !listEventEnemies [page]; page must be a positive integer"
+    if not finiteStatusNumber(page) or page < 1 or page ~= math.floor(page) then
+        ply:ChatPrint(usage .. ".")
+        return
+    end
+    if not eventActive then ply:ChatPrint("No active encounter.") return end
+
+    local owners, copied = activeEnemies, {}
+    local name, remaining, initial = activeEventName, totalEnemies, initialEnemies
+    for enemy in pairs(owners) do copied[#copied + 1] = enemy end
+    local rows, omitted = {}, 0
+    for _, enemy in ipairs(copied) do
+        if not IsValid(enemy) or enemy:IsMarkedForDeletion() then omitted = omitted + 1
+        else
+            local ok, index = pcall(function() return enemy:EntIndex() end)
+            if not ok or not finiteStatusNumber(index) or index <= 0 or index ~= math.floor(index) then index = nil end
+            local prefix = index and ("Entity index " .. string.format("%.17g", index) .. ": ")
+                or "Unindexed: index unavailable; "
+            rows[#rows + 1] = {index = index, text = prefix .. enemyLocationPosition(enemy) .. "."}
+        end
+    end
+    if not eventActive or activeEnemies ~= owners then
+        ply:ChatPrint("Encounter changed during inspection. Retry !listEventEnemies [page].")
+        return
+    end
+    table.sort(rows, function(a, b)
+        if a.index and b.index and a.index ~= b.index then return a.index < b.index end
+        if a.index and not b.index then return true end
+        if b.index and not a.index then return false end
+        return a.text < b.text
+    end)
+    local pages = math.max(1, math.ceil(#rows / 8))
+    if page > pages then ply:ChatPrint(usage .. " in 1-" .. pages .. ".") return end
+    local replies = {enemyLocationName(name), "Enemy locations, page " .. page .. "/" .. pages
+        .. ": progress " .. remaining .. "/" .. initial .. "; listed " .. #rows
+        .. "; omitted invalid/deleting " .. omitted .. "."}
+    for i = (page - 1) * 8 + 1, math.min(page * 8, #rows) do replies[#replies + 1] = rows[i].text end
+    replies[#replies + 1] = "Temporary entity indices can be reused. !listEventEnemies [page] (1-" .. pages .. "); fresh snapshot."
+    for _, reply in ipairs(replies) do ply:ChatPrint(reply) end
+end
+
 local function printSelectionStatus(ply)
     if eventActive then
         adminLine(ply, 'Active event: "' .. activeEventName, '" (' .. totalEnemies .. "/" .. initialEnemies
             .. " enemies remaining" .. (eventInterrupted and "; interrupted" or "") .. ").")
+        adminLine(ply, "!listEventEnemies [page] shows current owned enemy locations (approximate).")
     else adminLine(ply, "Active event: none.") end
     local count, names, counts = 0, {}, {}
     for _, ent in pairs(ents.FindByClass("activatorent")) do
@@ -304,13 +377,15 @@ end
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     local command = text:match("^(!%S+)")
     if command ~= "!nextEvent" and command ~= "!clearNextEvent" and command ~= "!eventStatus"
-        and command ~= "!listEvents" then return end
+        and command ~= "!listEvents" and command ~= "!listEventEnemies" then return end
     if not IsValid(ply) or not ply:IsPlayer() then return end
     if not ply:IsAdmin() then
         adminLine(ply, "Only admins can select or inspect encounters.")
         return ""
     end
-    if command == "!listEvents" then
+    if command == "!listEventEnemies" then
+        printEventEnemies(ply, text)
+    elseif command == "!listEvents" then
         printEventCatalog(ply, text)
     elseif command == "!nextEvent" then
         local name = text:match("^!nextEvent%s(.*)$")

@@ -26,6 +26,7 @@ Admin chat commands:
 - `!listEvents [page]`: browse all configured names and their selection eligibility
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect the active encounter, ready activators and pending choice
+- `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
 
 Accepted spawn additions, removals and moves attempt a verified save immediately
 to the DATA directory; clean shutdown also checks the latest state. Positions load on initialization.
@@ -161,6 +162,29 @@ NPC class is unusable in the engine. The status command does not consume the
 pending choice, sample random events/positions, advance the timer, or start an
 encounter. Existing spawning and selection rules continue to decide what the
 next normal attempt does.
+
+### Find a remaining encounter enemy
+
+If an encounter still has enemies that players cannot find, use
+`!listEventEnemies`, then `!listEventEnemies 2` for another page. The command
+privately shows the requesting admin up to eight enemy rows per page. It reads
+the active encounter's owned enemies and their current world positions; the
+configured starting positions remain available separately through `!listSpawns`.
+
+Coordinates are approximate. Missing or unreadable positions and unavailable
+entity indices are identified explicitly. Invalid or deleting tracked entities
+are omitted and counted separately, so the listed row count may differ from the
+encounter's remaining count. Inspection does not prune that set or decide when
+the fight finishes. Available entity indices are sorted numerically; they are
+temporary references and can be reused after deletion, as described by
+[the engine's EntIndex API](https://wiki.facepunch.com/gmod/Entity:EntIndex).
+
+Each request builds a fresh snapshot before sending replies. Moving enemies,
+kills and removals can change the next page request; no cursor or persistent
+enemy ID is created. The command does not move an NPC, repair navigation,
+cancel the encounter or change its selection, timer or saved data. Native
+Garry's Mod chat delivery, coordinates and entity-index lifetime still need a
+disposable-server smoke check; local Lua doubles do not establish those results.
 
 ### Browse configured encounters
 

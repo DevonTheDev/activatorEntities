@@ -164,11 +164,12 @@ function M.new(client)
     env.ents.FindByClass = function(class) return find("class", class) end
     env.ents.FindByName = function(name) return find("name", name) end
     function env.entity(class)
-        local ent = {valid=true, class=class, name="", pos=env.Vector(0,0,0), chats={}}
+        local ent = {valid=true, class=class, name="", pos=env.Vector(0,0,0), chats={}, index=#env.entities+1}
         function ent:IsPlayer() return self.class == "player" end
         function ent:GetClass() return self.class end
         function ent:IsMarkedForDeletion() return self.markedForDeletion == true end
         function ent:GetName() return self.name end
+        function ent:EntIndex() return self.index end
         function ent:SetName(value) self.name = value end
         function ent:GetPos() return self.pos end
         function ent:SetPos(value) assert(value, "missing position"); self.pos = value end
