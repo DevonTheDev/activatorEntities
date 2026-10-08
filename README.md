@@ -44,11 +44,20 @@ inspected activator point. To delete or add a point instead, use the existing
 
 Copy the exact displayed key, including scientific notation if shown for an
 unusually large key. Keys identify stored entries, not row numbers or positions
-within the page. The bare remove commands still remove the last point; an
+within the page. The bare remove commands still remove the highest stored key; an
 invalid indexed request never falls back to that behavior. Bare or malformed
 move commands give usage help and never add or remove a point.
 If a maximum key is too large for adding one to produce a distinct valid key,
 adding a point is refused instead of overwriting an existing point or wrapping.
+
+The original add and bare remove commands also refuse ambiguous current-map
+records, malformed map identities, and missing or malformed existing target
+lists. A refusal leaves the configuration and saved files unchanged; it does not
+repair or choose between duplicate records. These commands still work without a
+prior inspection. Adding on a genuinely absent map creates one record with both
+point lists; removing from an absent map or an empty valid list changes nothing.
+Valid local edits keep the existing save behavior, including remaining in memory
+if another invalid position list prevents the complete configuration from saving.
 
 Moving a point or removing it by key requires your latest inspected page for that map and point
 kind. Listing another page or kind replaces it. An accepted edit by any admin

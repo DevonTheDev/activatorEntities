@@ -220,7 +220,7 @@ local function spawnNumberToken(value)
     if formatted and tonumber(precise) == value then return precise end
 end
 
-local function inspectedSpawnList(kind)
+local function editableSpawnList(kind, allowMissingMap)
     if type(SpawnPositions) ~= "table" then return nil, nil, "malformed map data" end
     local currentMap, information = game.GetMap(), nil
     for key, record in pairs(SpawnPositions) do
@@ -233,7 +233,10 @@ local function inspectedSpawnList(kind)
             information = record
         end
     end
-    if not information then return nil, nil, "missing current-map record" end
+    if not information then
+        if allowMissingMap then return end
+        return nil, nil, "missing current-map record"
+    end
     local positions = information[spawnKinds[kind].field]
     if positions == nil then return nil, nil, "missing " .. kind .. " list" end
     if not validPositionList(positions) then return nil, nil, "malformed " .. kind .. " list" end
@@ -258,7 +261,7 @@ local function printSpawnList(sender, text)
         sender:ChatPrint("Usage: !listSpawns " .. kind .. " [page]; use a positive integer page.")
         return
     end
-    local information, positions, reason = inspectedSpawnList(kind)
+    local information, positions, reason = editableSpawnList(kind)
     if not information then
         sender:ChatPrint("Cannot inspect spawns: " .. reason .. ".")
         return
@@ -307,7 +310,7 @@ local function inspectedSpawnTarget(sender, kind, token)
     local inspection = spawnInspections[sender]
     if not inspection or inspection.kind ~= kind or inspection.map ~= game.GetMap()
         or not inspection.shown[token] then return nil end
-    local information, positions = inspectedSpawnList(kind)
+    local information, positions = editableSpawnList(kind)
     if not rawequal(information, inspection.information) or not rawequal(positions, inspection.positions) then return nil end
     for _, shown in pairs(inspection.shown) do
         local current = positions[shown.key]
@@ -408,13 +411,18 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     local command = commands[text]
     if not command then return end
 
-    local information = mapInformation(game.GetMap())
+    local kind = command[1] == "enemySpawnPositions" and "enemy" or "activator"
+    local information, positions, reason = editableSpawnList(kind, true)
+    if reason then
+        sender:ChatPrint("Spawn unchanged: " .. reason .. ".")
+        return
+    end
     if command[3] then
         if not information then
             information = {map = game.GetMap(), enemySpawnPositions = {}, activatorSpawnPositions = {}}
             table.insert(SpawnPositions, information)
+            positions = information[command[1]]
         end
-        local positions = information[command[1]]
         local maximum = table.maxn(positions)
         local nextKey = maximum + 1
         if not listIndex(nextKey) or nextKey <= maximum or positions[nextKey] ~= nil then
@@ -422,14 +430,13 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
             return ""
         end
         positions[nextKey] = sender:GetPos()
-        invalidateSpawnInspections(game.GetMap(), command[1] == "enemySpawnPositions" and "enemy" or "activator")
+        invalidateSpawnInspections(game.GetMap(), kind)
         confirmSpawnEdit(sender, "New " .. command[2] .. " Spawn Successfully Set at " .. tostring(sender:GetPos()) .. ".")
     else
-        local positions = information and information[command[1]]
         local last = positions and table.maxn(positions) or 0
         if last > 0 then
             positions[last] = nil
-            invalidateSpawnInspections(game.GetMap(), command[1] == "enemySpawnPositions" and "enemy" or "activator")
+            invalidateSpawnInspections(game.GetMap(), kind)
             confirmSpawnEdit(sender, "The previous " .. command[2] .. " spawn was successfully removed.")
         else
             sender:ChatPrint("There are no more " .. command[2] .. " spawns to remove.")
