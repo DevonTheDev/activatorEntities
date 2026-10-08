@@ -415,6 +415,29 @@ function destroyActivators()
     activatorCount = 0
 end
 
+-- Retire ready authority before removal callbacks; the normal timer owns replacement.
+hook.Add("PlayerSay", "refreshReadyActivators", function(ply, text)
+    if text:match("^(!%S+)") ~= "!refreshActivators" then return end
+    if not IsValid(ply) or not ply:IsPlayer() then return end
+    if not ply:IsAdmin() then
+        adminLine(ply, "Only admins can refresh activators.")
+        return ""
+    end
+    if text ~= "!refreshActivators" then
+        adminLine(ply, "Usage: !refreshActivators")
+        return ""
+    end
+    if eventActive then
+        adminLine(ply, "Cannot refresh activators during an active encounter. Finish it or use !stopEvent first.")
+        return ""
+    end
+    clearSelectedBatch()
+    destroyActivators()
+    timer.Start("activatorSpawner")
+    adminLine(ply, "Ready activator removal requested (including manual activators). Normal spawn delay restarted; the next attempt still requires ordinary spawn conditions.")
+    return ""
+end)
+
 local function finishEvent(completed)
     constructingEnemies = nil
     eventActive = false

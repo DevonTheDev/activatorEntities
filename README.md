@@ -21,6 +21,7 @@ Admin chat commands:
 - `!removeEnemySpawn <key>` / `!removeActivatorSpawn <key>`: remove one freshly inspected position
 - `!moveEnemySpawn <key>` / `!moveActivatorSpawn <key>`: move one freshly inspected position to where you are standing
 - `!stopEvent`: remove the current event's enemies and restart the spawn delay
+- `!refreshActivators`: retire ready addon activators and restart the normal spawn delay
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
 - `!listEvents [page]`: browse all configured names and their selection eligibility
 - `!clearNextEvent`: clear that pending choice
@@ -77,6 +78,37 @@ stale inspection with another edit, and restart to verify persistence. Repeat
 for both point kinds, verify future spawns use the edited point, and check that
 existing actors and an active encounter continue normally. Enemy spawns retain
 their existing `(30, 30, 0)` placement offset from the stored point.
+
+### Apply changes to a fresh ready batch
+
+After editing activator positions or queueing a different encounter, an admin
+can use `!refreshActivators` while no encounter is active. It requests removal
+of every addon `activatorent`, including manually spawned ones, and clears the
+selected ready batch. The pending next encounter stays queued. Other NPC types,
+spawn data and persistence settings are unaffected.
+
+The command restarts the ordinary timer, including when no activators are
+present. It does not spawn immediately or start an encounter. The next normal
+attempt still requires enough players, usable configuration and spawn positions,
+and available capacity. A pending choice is consumed only after a fresh
+activator successfully spawns. Use `!eventStatus` to inspect blocked conditions.
+
+Active encounters refuse this command without changing their enemies or
+progress. Use the separate `!stopEvent` command if you intend to cancel a fight.
+Extra arguments to `!refreshActivators` produce usage help without refreshing.
+
+Old interaction grants are cleared before removal starts. Removal can remain
+pending until the [next engine tick](https://wiki.facepunch.com/gmod/Entity:Remove),
+so the reply reports a request rather than immediate disappearance. The
+[existing timer is restarted](https://wiki.facepunch.com/gmod/timer.Start);
+the command does not bypass its configured delay. Open client dialogues retire
+through their existing actor-removal/liveness handling.
+
+Local command and workflow tests use engine doubles. A disposable Garry's Mod
+server is still needed to check native timer timing, replicated removal, open
+dialogue retirement and chat-addon interaction. Include a manually spawned
+activator, queue a different encounter, refresh after moving a point, and verify
+that only a later ordinary spawn uses the new position and queued definition.
 
 ### Choose the next encounter
 
