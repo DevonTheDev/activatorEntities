@@ -330,11 +330,15 @@ power-loss durability; do not crash a production server to test it.
   resize the same open menu without submitting a request. Its full-screen frame
   cannot be dragged off-screen.
 - An open dialogue retires when the client receives a valid active-encounter
-  snapshot or its captured activator is removed or remains invalid. This also
+  snapshot, its captured activator is removed or remains invalid, or its captured
+  player is observed dead or invalid. This also
   covers another player's Start and a start that removes the actors but creates
   no enemies. Automatic retirement sends no Start or Cancel request, and old
   callbacks cannot submit through a replacement dialogue. An inactive progress
   snapshot alone leaves a valid fresh menu usable.
+  Opening and button/close callbacks also check the captured player's liveness.
+  A death and respawn entirely between client observations cannot be detected
+  by these checks; server interaction grants remain authoritative.
   Client full-update removal notices are ignored immediately because an entity
   can be recreated during that refresh; later liveness checks still retire an
   actor that remains invalid ([Facepunch removal-hook documentation](https://wiki.facepunch.com/gmod/GM:EntityRemoved)).
@@ -429,6 +433,8 @@ selection, and fresh-use recovery after the actual admin repair callback.
 Dialogue-lifecycle checks transfer real server packets between separate client
 entity copies, exercise actor-removal and client update callbacks, and preserve
 valid menu replacement, ordinary Start/Cancel and completion/progress panels.
+They also cover player death/invalidation, delayed opening packets, callbacks
+before Think, and fresh same-actor Use after an observed death and respawn.
 Deferred panel-removal checks also reject retained Start/Cancel callbacks while
 a panel is marked for deletion but still valid, and preserve normal DFrame
 Close/Cancel ordering. They verify request ownership without claiming native
@@ -448,8 +454,9 @@ before retries and preserving normal admin/encounter behavior.
 
 The suite exits nonzero on failure. The harness supports Lua
 5.1 and newer; its small source adapter translates GLua operators/comments.
-This pass was checked in Lua 5.3 via `texlua`, plus Lua 5.1 and LuaJIT 2.1
-through Lupa 2.6.
+Earlier work was checked in Lua 5.3 via `texlua`, plus Lua 5.1 and LuaJIT 2.1
+through Lupa 2.6. The player-liveness correction was checked with the installed
+Lua 5.4 shared library via its C API; those earlier runtimes were not rerun.
 
 These tests do **not** run the Garry's Mod engine. NPC behavior, entity networking,
 native `ChatPrint` delivery/rendering, Derma layout, real timer timing, and saved
@@ -461,6 +468,9 @@ test:
 2. Have two players open activators; start from one. The other player's old
    dialogue should close automatically and must not create another event. Also
    remove an idle actor while its dialogue is open, and check that it closes.
+   Die with a dialogue open and confirm the popup closes and releases the cursor.
+   Respawn, use the same retained actor afresh, and confirm Start works while the
+   old controls stay inert. Check another player's dialogue remains usable.
    Repeat the server's stale-request checks after dying and respawning.
 3. Kill enemies with player weapons and world damage. Confirm one completion
    notice that disappears after five seconds, and the next activator batch after

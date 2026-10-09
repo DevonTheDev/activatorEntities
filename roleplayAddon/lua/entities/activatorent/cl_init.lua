@@ -1,18 +1,22 @@
 include("shared.lua")
 
-local activeFrame, activeActivator
+local activeFrame, activeActivator, activePlayer
 local activeAlertFrame
+
+local function playerIsAlive(ply)
+    return IsValid(ply) and ply:Alive()
+end
 
 local function retireInteraction(frame)
     if activeFrame ~= frame then return end
     -- Detach first: closing an obsolete frame must never cancel a newer Use.
-    activeFrame, activeActivator = nil, nil
+    activeFrame, activeActivator, activePlayer = nil, nil, nil
     if IsValid(frame) then frame:Close() end
 end
 
 hook.Add("Think", "retireObsoleteActivatorDialogue", function()
     local frame = activeFrame
-    if frame and (not IsValid(frame) or frame:IsMarkedForDeletion() or not IsValid(activeActivator)) then
+    if frame and (not IsValid(frame) or frame:IsMarkedForDeletion() or not IsValid(activeActivator) or not playerIsAlive(activePlayer)) then
         retireInteraction(frame)
     end
 end)
@@ -39,21 +43,21 @@ net.Receive("OpenInteractionMenu", function(len)
     local ent = net.ReadEntity()
     local eventIdentifier = net.ReadString()
     local npcDialogue = net.ReadString()
-    if not IsValid(ply) or not IsValid(ent) then return end
+    if not playerIsAlive(ply) or not IsValid(ent) then return end
 
     -- The new server message has already replaced the previous interaction.
     retireInteraction(activeFrame)
 
     -- Creates the background derma frame
     local frame = vgui.Create("DFrame")
-    activeFrame, activeActivator = frame, ent
+    activeFrame, activeActivator, activePlayer = frame, ent, ply
     local submitted, closed = false, false
     frame.OnClose = function()
         if closed then return end
         closed = true
         if activeFrame ~= frame then return end
-        activeFrame, activeActivator = nil, nil
-        if submitted or not IsValid(frame) then return end
+        activeFrame, activeActivator, activePlayer = nil, nil, nil
+        if submitted or not IsValid(frame) or not playerIsAlive(ply) then return end
         net.Start("CloseInteractionMenu")
             net.WriteEntity(ent)
         net.SendToServer()
@@ -83,6 +87,7 @@ net.Receive("OpenInteractionMenu", function(len)
 
     activatorButton.DoClick = function()
         if submitted or closed or activeFrame ~= frame or not IsValid(frame) or frame:IsMarkedForDeletion() then return end
+        if not playerIsAlive(ply) then retireInteraction(frame) return end
         submitted = true
         -- Starting consumes the server interaction; do not cancel it first.
         net.Start("SendNPCInformation")
@@ -98,6 +103,7 @@ net.Receive("OpenInteractionMenu", function(len)
 
     otherButton.DoClick = function()
         if closed or activeFrame ~= frame or not IsValid(frame) or frame:IsMarkedForDeletion() then return end
+        if not playerIsAlive(ply) then retireInteraction(frame) return end
         frame:Close() -- Closes the frame
     end
 

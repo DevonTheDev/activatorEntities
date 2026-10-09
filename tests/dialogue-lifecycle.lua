@@ -133,6 +133,121 @@ return function(gmod, test, eq)
         end
     end
 
+    test("actual Use followed by player death retires the dialogue on client Think",function()
+        local server,client,player,actor,menu=ready()
+        player.alive=false; server.fire("PlayerDeath",player)
+        client.copies[player].alive=false
+        eq(actor.valid,true); eq(menu.actor.valid,true)
+        client.env.fire("Think")
+        retired(menu); noRequests(client); eq(server.totalEnemies,0)
+        oldCallbacks(menu); client.env.fire("Think"); noRequests(client)
+    end)
+
+    local function losePlayer(server, client, player, reason)
+        local captured=assert(client.copies[player])
+        if reason == "dead" then
+            player.alive=false; server.fire("PlayerDeath",player)
+            captured.alive=false
+        else
+            server.fire("PlayerDisconnected",player); player.valid=false
+            captured.valid=false
+            captured.Alive=function() error("invalid players must not be queried") end
+        end
+    end
+
+    for _,deferred in ipairs({false,true}) do
+        for _,reason in ipairs({"dead","invalid"}) do
+            test("Think retires a " .. reason .. " captured player with deferred removal " .. tostring(deferred),function()
+                local server,client,player,actor,menu=ready(deferred)
+                losePlayer(server,client,player,reason)
+                client.env.fire("Think")
+                eq(menu.frame:IsVisible(),false); eq(actor.valid,true); eq(menu.actor.valid,true)
+                if deferred then
+                    eq(menu.frame.valid,true); eq(menu.frame:IsMarkedForDeletion(),true)
+                end
+                oldCallbacks(menu); client.env.fire("Think")
+                noRequests(client); eq(server.totalEnemies,0)
+                if deferred then client.env.flushPanelRemovals() end
+                retired(menu)
+            end)
+
+            for _,callback in ipairs({"Start","Cancel","Close"}) do
+                test(callback .. " observes a " .. reason .. " player before Think with deferred removal " .. tostring(deferred),function()
+                    local server,client,player,actor,menu=ready(deferred)
+                    losePlayer(server,client,player,reason)
+                    if callback == "Start" then menu.start:DoClick()
+                    elseif callback == "Cancel" then menu.cancel:DoClick()
+                    else menu.frame:Close() end
+                    noRequests(client); eq(server.totalEnemies,0)
+                    eq(menu.frame:IsVisible(),false)
+                    if deferred then
+                        eq(menu.frame.valid,true); eq(menu.frame:IsMarkedForDeletion(),true)
+                    end
+                    oldCallbacks(menu); client.env.fire("Think"); noRequests(client)
+                    if deferred then client.env.flushPanelRemovals() end
+                    retired(menu)
+                end)
+            end
+        end
+
+        test("observed death then fresh respawn Use keeps new ownership with deferred removal " .. tostring(deferred),function()
+            local server,client,player,actor,menu=ready(deferred)
+            losePlayer(server,client,player,"dead"); client.env.fire("Think")
+            eq(menu.frame:IsVisible(),false); noRequests(client)
+            player.alive=true; server.fire("PlayerSpawn",player)
+            client.copies[player].alive=true
+            local nextMenu=open(server,client,player,actor)
+            oldCallbacks(menu); client.env.fire("Think")
+            noRequests(client); eq(nextMenu.frame:IsVisible(),true)
+            start(server,client,player,nextMenu); eq(server.totalEnemies,5)
+            eq(client.env.messageCount("CloseInteractionMenu"),0)
+            if deferred then client.env.flushPanelRemovals() end
+            retired(menu); retired(nextMenu)
+        end)
+    end
+
+    for _,reason in ipairs({"dead","invalid"}) do
+        test("a delayed actual opening packet creates no popup for a " .. reason .. " player",function()
+            local server,client=gmod.new(),clientRealm()
+            local player,actor=server.ready()
+            actor:AcceptInput("Use",player,player)
+            local message=server.messages[#server.messages]
+            eq(message.name,"OpenInteractionMenu"); eq(message.player,player)
+            local captured=client.env.entity("player")
+            client.copies[player],client.originals[captured]=captured,player
+            losePlayer(server,client,player,reason)
+            toClient(client,message); client.env.fire("Think")
+            eq(#client.env.panels,0); noRequests(client); eq(server.totalEnemies,0)
+            eq(actor.valid,true)
+        end)
+    end
+
+    test("another player's death leaves the captured player's dialogue usable",function()
+        local server,client,player,actor,menu,other,stranger,otherMenu=pair()
+        losePlayer(server,other,stranger,"dead")
+        client.env.fire("Think")
+        eq(menu.frame:IsVisible(),true); noRequests(client)
+        start(server,client,player,menu); eq(server.totalEnemies,5)
+    end)
+
+    test("player death retirement leaves completion popup and passive HUD independent",function()
+        local server,client,player,actor,menu=ready()
+        client.env.receive("roundFinished",nil)
+        local alert
+        for _,panel in ipairs(client.env.panels) do
+            if panel.class == "DFrame" and panel ~= menu.frame then alert=panel end
+        end
+        losePlayer(server,client,player,"dead"); client.env.fire("Think")
+        retired(menu); eq(alert.valid,true); noRequests(client)
+        client.env.receive("ActivatorEventStatus",nil,true,"Raid",3,5,true)
+        local progress=assert(hud(client))
+        client.env.fire("Think")
+        eq(progress.mouseInput,false); eq(progress.keyboardInput,false); eq(progress.popup,nil)
+        eq(progress.valid,true); eq(alert.valid,true)
+        client.env.fireTimer("destroyAlertFrame")
+        eq(alert.valid,false); eq(progress.valid,true); noRequests(client)
+    end)
+
     test("another player's active snapshot retires the observer before actor invalidation",function()
         local server,client,player,actor,menu,other,starter,otherMenu=pair()
         start(server,other,starter,otherMenu)
