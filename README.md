@@ -181,10 +181,35 @@ temporary references and can be reused after deletion, as described by
 
 Each request builds a fresh snapshot before sending replies. Moving enemies,
 kills and removals can change the next page request; no cursor or persistent
-enemy ID is created. The command does not move an NPC, repair navigation,
-cancel the encounter or change its selection, timer or saved data. Native
-Garry's Mod chat delivery, coordinates and entity-index lifetime still need a
+enemy ID is created. A successful page keeps a private, server-local selection
+for that admin until their next successful page, an accepted removal request,
+disconnection or encounter retirement. Listing has no gameplay, timer, randomness,
+saved-data or network-publication side effects.
+
+### Remove one inspected encounter enemy
+
+After `!listEventEnemies`, an admin can use `!removeEventEnemy <index>` with the
+exact index shown on their latest page. This requests removal of that one captured
+owned enemy, keeps the other enemies fighting and preserves the queued next event.
+Each accepted request consumes that admin's page; list again before another cleanup.
+Another admin must inspect independently. Off-page, unindexed, duplicate, changed,
+already-removing and stale targets are refused. The command keeps direct object
+ownership and never looks up a new entity by a potentially reused index.
+
+Cleanup immediately marks the encounter **interrupted**, so finishing its survivors
+cannot award the ordinary victory notice. Remaining counts change only when the
+existing kill/removal hooks run; an engine removal request may be deferred. Once the
+last enemy is accounted for, the normal spawn delay resumes and the queued encounter
+can appear on its ordinary eligible attempt. The acknowledgement is private and
+reports a removal request, without the full-event deletion announcement used by
+`!stopEvent`.
+
+These commands do not move NPCs or repair navigation. Native Garry's Mod chat
+delivery, coordinates, entity-index lifetime and deferred removal still need a
 disposable-server smoke check; local Lua doubles do not establish those results.
+Use two admins to inspect and request the same target, verify replay is refused,
+check the interrupted progress HUD with survivors still fighting, then remove the
+last enemy and verify the next ordinary spawn. Also check non-admin rejection.
 
 ### Browse configured encounters
 

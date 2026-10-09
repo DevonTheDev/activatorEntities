@@ -22,6 +22,8 @@ local eventInterrupted = false
 local activeEventName
 local initialEnemies = 0
 local statusRequestAfter = {}
+local enemyInspections = {}
+local enemyRemovalRequests = {}
 local interactionLifetime = 60
 local interactionDistanceSquared = 200 * 200
 
@@ -307,6 +309,12 @@ local function enemyLocationName(name)
     return 'Active encounter: "' .. display .. '".'
 end
 
+local function enemyLocationIndex(enemy)
+    local ok, index = pcall(function() return enemy:EntIndex() end)
+    if not ok or not finiteStatusNumber(index) or index <= 0 or index ~= math.floor(index) then return nil end
+    return index, string.format("%.17g", index)
+end
+
 local function printEventEnemies(ply, text)
     local argument = text:match("^!listEventEnemies%s*(.-)%s*$")
     local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
@@ -320,15 +328,15 @@ local function printEventEnemies(ply, text)
     local owners, copied = activeEnemies, {}
     local name, remaining, initial = activeEventName, totalEnemies, initialEnemies
     for enemy in pairs(owners) do copied[#copied + 1] = enemy end
-    local rows, omitted = {}, 0
+    local rows, indexCounts, omitted = {}, {}, 0
     for _, enemy in ipairs(copied) do
         if not IsValid(enemy) or enemy:IsMarkedForDeletion() then omitted = omitted + 1
         else
-            local ok, index = pcall(function() return enemy:EntIndex() end)
-            if not ok or not finiteStatusNumber(index) or index <= 0 or index ~= math.floor(index) then index = nil end
-            local prefix = index and ("Entity index " .. string.format("%.17g", index) .. ": ")
-                or "Unindexed: index unavailable; "
-            rows[#rows + 1] = {index = index, text = prefix .. enemyLocationPosition(enemy) .. "."}
+            local index, token = enemyLocationIndex(enemy)
+            if token then indexCounts[token] = (indexCounts[token] or 0) + 1 end
+            local prefix = token and ("Entity index " .. token .. ": ") or "Unindexed: index unavailable; "
+            rows[#rows + 1] = {index = index, token = token, enemy = enemy,
+                text = prefix .. enemyLocationPosition(enemy) .. "."}
         end
     end
     if not eventActive or activeEnemies ~= owners then
@@ -346,9 +354,58 @@ local function printEventEnemies(ply, text)
     local replies = {enemyLocationName(name), "Enemy locations, page " .. page .. "/" .. pages
         .. ": progress " .. remaining .. "/" .. initial .. "; listed " .. #rows
         .. "; omitted invalid/deleting " .. omitted .. "."}
-    for i = (page - 1) * 8 + 1, math.min(page * 8, #rows) do replies[#replies + 1] = rows[i].text end
+    local targets = {}
+    for i = (page - 1) * 8 + 1, math.min(page * 8, #rows) do
+        local row = rows[i]
+        replies[#replies + 1] = row.text
+        if row.token and indexCounts[row.token] == 1 then targets[row.token] = row.enemy end
+    end
     replies[#replies + 1] = "Temporary entity indices can be reused. !listEventEnemies [page] (1-" .. pages .. "); fresh snapshot."
+    replies[#replies + 1] = "!removeEventEnemy <index> requests one listed enemy's removal; interrupts the encounter (no victory). List again after each request."
+    -- Install before replies: nested inspection or retirement must win.
+    enemyInspections[ply] = {owners = owners, targets = targets}
     for _, reply in ipairs(replies) do ply:ChatPrint(reply) end
+end
+
+local function removeEventEnemy(ply, text)
+    local token = text:match("^!removeEventEnemy%s+(%S+)%s*$")
+    if not token then
+        adminLine(ply, "Usage: !removeEventEnemy <index> from your latest !listEventEnemies page; interrupts the encounter (no victory).")
+        return
+    end
+    local inspection = enemyInspections[ply]
+    local enemy = inspection and inspection.targets[token]
+    local owners = inspection and inspection.owners
+    local function current()
+        return IsValid(ply) and ply:IsPlayer() and ply:IsAdmin()
+            and eventActive and activeEnemies == owners and owners[enemy]
+            and enemyInspections[ply] == inspection and not enemyRemovalRequests[enemy]
+    end
+    local accepted = false
+    if enemy and current() then
+        -- Getters can reenter: revalidate permission and exact ownership afterward.
+        local ok, usable = pcall(function()
+            if not IsValid(enemy) or enemy:IsMarkedForDeletion() then return false end
+            local _, currentToken = enemyLocationIndex(enemy)
+            return currentToken == token and not enemy:IsMarkedForDeletion() and IsValid(enemy)
+        end)
+        accepted = ok and usable and current()
+    end
+    if not accepted then
+        if IsValid(ply) and ply:IsPlayer() then
+            adminLine(ply, "Enemy removal refused: inspect again with !listEventEnemies [page] and use one unique, unchanged index from your latest page.")
+        end
+        return
+    end
+    -- Consume before Remove can reenter, including from another admin's snapshot.
+    -- Existing kill/removal hooks alone own accounting and encounter retirement.
+    enemyInspections[ply] = nil
+    enemyRemovalRequests[enemy] = true
+    eventInterrupted = true
+    enemy:Remove()
+    if IsValid(ply) and ply:IsPlayer() then
+        adminLine(ply, "Enemy " .. token .. " removal requested; encounter interrupted (no victory). Other enemies and the queued next event are unchanged.")
+    end
 end
 
 local function printSelectionStatus(ply)
@@ -377,13 +434,15 @@ end
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     local command = text:match("^(!%S+)")
     if command ~= "!nextEvent" and command ~= "!clearNextEvent" and command ~= "!eventStatus"
-        and command ~= "!listEvents" and command ~= "!listEventEnemies" then return end
+        and command ~= "!listEvents" and command ~= "!listEventEnemies" and command ~= "!removeEventEnemy" then return end
     if not IsValid(ply) or not ply:IsPlayer() then return end
     if not ply:IsAdmin() then
-        adminLine(ply, "Only admins can select or inspect encounters.")
+        adminLine(ply, "Only admins can select, inspect or clean up encounters.")
         return ""
     end
-    if command == "!listEventEnemies" then
+    if command == "!removeEventEnemy" then
+        removeEventEnemy(ply, text)
+    elseif command == "!listEventEnemies" then
         printEventEnemies(ply, text)
     elseif command == "!listEvents" then
         printEventCatalog(ply, text)
@@ -432,6 +491,7 @@ net.Receive("RequestActivatorEventStatus", function(_, ply)
 end)
 hook.Add("PlayerDisconnected", "clearActivatorStatusRequest", function(ply)
     statusRequestAfter[ply] = nil
+    enemyInspections[ply] = nil
 end)
 
 local function canInteract(ply, ent)
@@ -514,6 +574,8 @@ hook.Add("PlayerSay", "refreshReadyActivators", function(ply, text)
 end)
 
 local function finishEvent(completed)
+    enemyInspections = {}
+    enemyRemovalRequests = {}
     constructingEnemies = nil
     eventActive = false
     activeEnemies = {}
