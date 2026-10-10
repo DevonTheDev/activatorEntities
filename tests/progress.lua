@@ -92,25 +92,31 @@ return function(gmod, test, eq)
         broadcast(env, snapshot)
         eq(env.networkStrings[statusName], true); eq(env.networkStrings[requestName], true)
     end)
-    test("progress uses surviving spawned NPCs when creation and spawn both fail", function()
-        local env=gmod.new(); local create=env.ents.Create; local attempts=0
-        env.ents.Create=function(class)
-            if class ~= "npc_stalker" then return create(class) end
-            attempts=attempts+1
-            if attempts == 1 or attempts == 3 then return {valid=false} end
-            local enemy=create(class)
-            if attempts == 5 then
-                local spawn=enemy.Spawn
-                function enemy:Spawn() spawn(self); self:Remove() end
+    for _, deferred in ipairs({false, true}) do
+        test("progress excludes failed and self-removing candidates, deferred=" .. tostring(deferred), function()
+            local env=gmod.new(); env.deferRemoval=deferred
+            local create=env.ents.Create; local attempts=0; local survivors={}
+            env.ents.Create=function(class)
+                if class ~= "npc_stalker" then return create(class) end
+                attempts=attempts+1
+                if attempts == 1 or attempts == 3 then return {valid=false} end
+                local enemy=create(class)
+                if attempts == 5 then
+                    local spawn=enemy.Spawn
+                    function enemy:Spawn() spawn(self); self:Remove() end
+                else survivors[#survivors+1]=enemy end
+                return enemy
             end
-            return enemy
-        end
-        local ply, enemies=env.start()
-        eq(attempts, 5); eq(#enemies, 2); eq(env.totalEnemies, 2)
-        eq(env.messageCount(statusName), 1); active(lastSnapshot(env), "Raid", 2, 2, false)
-        env.fire("OnNPCKilled", enemies[1], ply)
-        active(lastSnapshot(env), "Raid", 1, 2, false)
-    end)
+            local ply=env.start()
+            eq(attempts, 5); eq(#survivors, 2); eq(env.totalEnemies, 2)
+            eq(env.messageCount(statusName), 1); active(lastSnapshot(env), "Raid", 2, 2, false)
+            env.flushRemovals(); eq(env.messageCount(statusName), 1)
+            env.fire("OnNPCKilled", survivors[1], ply)
+            active(lastSnapshot(env), "Raid", 1, 2, false)
+            env.fire("OnNPCKilled", survivors[2], ply)
+            inactive(lastSnapshot(env)); eq(env.messageCount("roundFinished"), 1)
+        end)
+    end
     test("custom event identifier reaches progress independently of the Raid default", function()
         local env=gmod.new(); env.NPCEdits[1].name="Supply Raid"
         local ply, activator=env.ready(); activator:AcceptInput("Use", ply, ply)

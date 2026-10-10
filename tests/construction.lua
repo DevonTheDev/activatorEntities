@@ -237,22 +237,65 @@ return function(gmod, test, eq)
         eq(env.messageCount("roundFinished"), 0); eq(env.timers.activatorSpawner.stopped, false)
     end)
 
-    test("self-removal before admission and failed creation do not inflate initial count", function()
-        local env, ply=prepare(); local create=env.ents.Create; local attempts=0
-        env.ents.Create=function(class)
-            if class ~= "npc_stalker" then return create(class) end
-            attempts=attempts+1
-            if attempts == 2 then return {valid=false} end
-            local enemy=create(class)
-            if attempts == 4 then
-                local spawn=enemy.Spawn
-                function enemy:Spawn() spawn(self); self:Remove() end
-            end
-            return enemy
+    for _, boundary in ipairs({"Spawn", "SetHealth"}) do
+        for _, deferred in ipairs({false, true}) do
+            test("self-removal during " .. boundary .. " excludes the candidate, deferred=" .. tostring(deferred), function()
+                local env, ply=prepare(); env.deferRemoval=deferred
+                local create=env.ents.Create; local attempts=0; local survivors={}; local rejected
+                env.ents.Create=function(class)
+                    if class ~= "npc_stalker" then return create(class) end
+                    attempts=attempts+1
+                    if attempts == 2 then return {valid=false} end
+                    local enemy=create(class)
+                    if attempts == 4 then
+                        rejected=enemy; local method=enemy[boundary]
+                        enemy[boundary]=function(self, ...) method(self, ...); self:Remove() end
+                    else survivors[#survivors+1]=enemy end
+                    return enemy
+                end
+                env.receive("SendNPCInformation", ply, "Raid")
+                eq(attempts, 5); eq(#survivors, 3); active(env, "Raid", 3, 3, false)
+                eq(spawnNotices(ply), 1)
+                eq(ply.chats[#ply.chats], "3 enemies have been spawned. Eliminate them.")
+                if boundary == "Spawn" then eq(rejected.health, nil, "deleted candidate skips health setup") end
+                env.flushRemovals(); active(env, "Raid", 3, 3, false)
+                eq(env.messageCount("ActivatorEventStatus"), 1, "excluded removal cannot publish progress")
+                for _, enemy in ipairs(survivors) do env.fire("OnNPCKilled", enemy, ply); enemy:Remove() end
+                eq(env.totalEnemies, 0); eq(env.messageCount("roundFinished"), 1)
+                eq(env.timers.activatorSpawner.stopped, false)
+                env.flushRemovals(); eq(env.messageCount("roundFinished"), 1)
+                eq(#env.errors, 0)
+            end)
         end
-        env.receive("SendNPCInformation", ply, "Raid")
-        eq(attempts, 5); active(env, "Raid", 3, 3, false)
-    end)
+        for _, paused in ipairs({false, true}) do
+            test("all candidates delete during " .. boundary .. " recover after failed start, paused=" .. tostring(paused), function()
+                local env, ply=prepare(); env.deferRemoval=true; ply.admin=true
+                if paused then env.fire("PlayerSay", ply, "!pauseActivatorSpawns") end
+                local create=env.ents.Create; local attempts=0
+                env.ents.Create=function(class)
+                    local enemy=create(class)
+                    if class == "npc_stalker" then
+                        attempts=attempts+1; local method=enemy[boundary]
+                        enemy[boundary]=function(self, ...) method(self, ...); self:Remove() end
+                    end
+                    return enemy
+                end
+                env.receive("SendNPCInformation", ply, "Raid")
+                eq(attempts, 5); eq(env.totalEnemies, 0)
+                eq(#lastStatus(env), 1); eq(lastStatus(env)[1], false)
+                eq(env.messageCount("roundFinished"), 0); eq(spawnNotices(ply), 0)
+                eq(env.timers.activatorSpawner.stopped, paused)
+                eq(#env.errors, 1); eq(env.errors[1], "ERROR - No event enemies could be spawned\n")
+                env.flushRemovals()
+                eq(#env.ents.FindByName("devonsSpawnedEntity"), 0)
+                eq(env.messageCount("ActivatorEventStatus"), 1)
+                eq(env.timers.activatorSpawner.stopped, paused)
+                env.ents.Create=create
+                if paused then env.fire("PlayerSay", ply, "!resumeActivatorSpawns") end
+                recover(env)
+            end)
+        end
+    end
 
     for _, boundary in ipairs({"Create", "Spawn", "SetHealth"}) do
         test("replacement during old NPC " .. boundary .. " retains exclusive ownership", function()

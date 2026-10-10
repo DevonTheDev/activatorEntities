@@ -690,12 +690,12 @@ net.Receive("SendNPCInformation", function(_, ply)
             if not ownsConstruction(enemies, enemy) then return end
             enemy:Spawn()
             if not ownsConstruction(enemies, enemy) then return end
-            if IsValid(enemy) then
+            if IsValid(enemy) and not enemy:IsMarkedForDeletion() then
                 local health = returnEnemyHealth()
                 if not ownsConstruction(enemies, enemy) then return end
                 enemy:SetHealth(health)
                 if not ownsConstruction(enemies, enemy) then return end
-                if IsValid(enemy) then
+                if IsValid(enemy) and not enemy:IsMarkedForDeletion() then
                     enemies[enemy] = true
                     totalEnemies = totalEnemies + 1
                     initialEnemies = initialEnemies + 1

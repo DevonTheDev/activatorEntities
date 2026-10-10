@@ -462,6 +462,9 @@ notifications and completion handling wait until construction settles. Explicit
 cancellation still retires the event immediately. The initial count includes
 enemies added and then killed or removed during setup; removal still prevents
 victory.
+Candidates that request removal before admission, including during Spawn or
+health setup, are excluded from both counts even when removal is deferred.
+They receive no replacement attempt; if none are usable, the start fails normally.
 
 ## Encounter progress
 
