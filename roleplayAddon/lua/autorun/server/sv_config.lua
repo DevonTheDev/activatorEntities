@@ -124,23 +124,6 @@ local function randomValue(values)
     return choices[math.random(1, #choices)]
 end
 
-local function mapInformation(mapName)
-    for _, information in pairs(SpawnPositions) do
-        if information.map == mapName then return information end
-    end
-end
-
--- Returns one configured enemy/activator position for this map.
-function returnSpawnPositions(mapName)
-    local information = mapInformation(mapName)
-    return information and randomValue(information.enemySpawnPositions)
-end
-
-function returnActivatorSpawns(mapName)
-    local information = mapInformation(mapName)
-    return information and randomValue(information.activatorSpawnPositions)
-end
-
 function determineRandomEvent()
     local event = randomValue(NPCEdits)
     return event and event.name
@@ -185,7 +168,7 @@ end
 
 util.AddNetworkString("entitiesDeleted")
 
--- The same finite sparse-list contract applies to persistence and inspection.
+-- The same finite sparse-list contract applies to persistence, editing and spawning.
 local function finiteNumber(value)
     return type(value) == "number" and value == value and value > -math.huge and value < math.huge
 end
@@ -220,15 +203,16 @@ local function spawnNumberToken(value)
     if formatted and tonumber(precise) == value then return precise end
 end
 
-local function editableSpawnList(kind, allowMissingMap)
+-- Validate the requested list without sampling or changing either position kind.
+local function validatedSpawnList(mapName, kind, allowMissingMap)
     if type(SpawnPositions) ~= "table" then return nil, nil, "malformed map data" end
-    local currentMap, information = game.GetMap(), nil
+    local information
     for key, record in pairs(SpawnPositions) do
         if not listIndex(key) or type(record) ~= "table"
             or type(record.map) ~= "string" or record.map == "" then
             return nil, nil, "malformed map data"
         end
-        if record.map == currentMap then
+        if record.map == mapName then
             if information then return nil, nil, "ambiguous current-map records" end
             information = record
         end
@@ -241,6 +225,27 @@ local function editableSpawnList(kind, allowMissingMap)
     if positions == nil then return nil, nil, "missing " .. kind .. " list" end
     if not validPositionList(positions) then return nil, nil, "malformed " .. kind .. " list" end
     return information, positions
+end
+
+local function editableSpawnList(kind, allowMissingMap)
+    return validatedSpawnList(game.GetMap(), kind, allowMissingMap)
+end
+
+-- Unavailable or ambiguous input has the same nil contract as an empty list.
+function returnSpawnPositions(mapName)
+    local _, positions = validatedSpawnList(mapName, "enemy")
+    return positions and randomValue(positions)
+end
+
+function returnActivatorSpawns(mapName)
+    local _, positions = validatedSpawnList(mapName, "activator")
+    return positions and randomValue(positions)
+end
+
+-- Timed spawning checks availability before its ordinary event-first RNG draws.
+function hasActivatorSpawns(mapName)
+    local _, positions = validatedSpawnList(mapName, "activator")
+    return positions ~= nil and next(positions) ~= nil
 end
 
 local function invalidateSpawnInspections(map, kind)

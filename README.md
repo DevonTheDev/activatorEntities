@@ -360,6 +360,16 @@ short constant `ChatPrint` text without configured names or positions; it adds
 no addon network message or client behavior. Failure to create any enemies
 after activation retains its existing cleanup path.
 
+Runtime spawning requires one unambiguous record for the requested map and a
+complete target list of finite Vectors at positive integer keys. Malformed or
+missing map data, duplicate current-map records, and missing, empty or malformed
+target lists are unavailable: the initial attempt consumes no spawn randomness
+and creates no entities. Activator and enemy lists remain independent; sparse
+valid lists keep their existing sampling order. Validation does not repair or
+save configuration. If a callback invalidates activator positions after a
+successful creation, the partial batch remains and later creations stop; a
+normal attempt can refill it after repair.
+
 If a server callback cancels an encounter during initial spawning, the abandoned
 loop stops creating enemies and requests removal of any enemy it just created.
 It cannot change the progress of a replacement encounter. Tracked kills and
@@ -426,6 +436,10 @@ pending ownership, missing and sparse map positions, and malformed or ambiguous
 configuration. Repeated status reads are followed by actual source-level spawn
 and start paths to check that inspection leaves their behavior intact. Timer
 remaining time and native NPC/model availability are not inferred by the tests.
+Runtime-spawn tests load accepted duplicate-map data, exercise malformed input
+through real lookup, timer and menu/Start handlers, and check rejection before
+RNG and creation. They cover fresh-use recovery, unchanged storage and selection,
+valid sparse sampling order, and callback invalidation of a partial batch.
 Start-feedback tests transfer the actual menu callback's request to the server
 receiver. They check private expiry/missing-position guidance, the exact 60/61
 second boundary, consumed replays, silent invalid requests, retained actors and

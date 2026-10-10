@@ -682,6 +682,7 @@ timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
     for _, ent in pairs(ents.FindByClass("activatorent")) do
         if usableActivator(ent) then activatorCount = activatorCount + 1 end
     end
+    if not hasActivatorSpawns(game.GetMap()) then return end
     local admittedSelection = activatorCount == 0 and pendingSelection or nil
     local selectedName = selectedBatchName or (admittedSelection and admittedSelection.name)
     local identifier
@@ -695,6 +696,8 @@ timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
 
     local maximum = returnMaxActivators() or 1
     for i = activatorCount + 1, maximum do
+        -- A previous Spawn callback may have made the next sample unavailable.
+        if not spawnPosition then break end
         local activator = ents.Create("activatorent")
         if IsValid(activator) then
             activator.EventIdentifier = identifier
