@@ -26,6 +26,15 @@ Lua hot-reload is unsupported. These guards check only pool, record and informat
 types. They do not validate event names or fields within an information table,
 including models, NPC classes, dialogue, counts or health.
 
+At Start, the server separately requires `maxNPCs` to be a finite number at
+least 1, rejecting NaN as well as the other invalid counts. Finite fractions
+keep their existing behavior: 2.75 attempts to create two enemies. Rejection
+consumes that interaction but preserves the ready actors, selected batch,
+queued future choice, timer and encounter progress. These fields are trusted
+server configuration; Start receives only the encounter identifier. Correct
+invalid configuration and restart the server before normal use. This guard
+does not validate native NPC classes, models or health, or add a count cap.
+
 Admin chat commands:
 
 - `!setActivatorSpawn` / `!setEnemySpawn`: add your current position for this map
@@ -521,6 +530,12 @@ side effects. They preserve the ordinary manual-removal timer restart and paused
 behavior, sparse random sampling, one-draw rejection, valid explicit choices beside
 bad records and first-match duplicate lookup. Table-shaped information remains
 accepted without claiming its fields are engine-valid.
+Count-admission tests exercise NaN through actual selected-batch timer, Use and
+Start callbacks with capped, running and paused timers. They check retained ready
+state, consumed replay, fresh-Use retry after a controlled table repair, normal
+completion and the separately queued next encounter. Existing invalid-count and
+finite fractional controls preserve the prior rejection and floor behavior.
+The controlled repair is a test fixture, not support for live Lua hot-reload.
 Encounter-selection tests cover administrator permissions, exact and duplicate
 names, pending replacement/clear, partial and failed spawning, selected-batch
 refills, manual actors, deferred removal and current/future ownership. They also

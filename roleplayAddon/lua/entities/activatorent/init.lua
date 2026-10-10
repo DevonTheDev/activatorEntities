@@ -668,7 +668,7 @@ net.Receive("SendNPCInformation", function(_, ply)
         ply:ChatPrint("No enemy spawn position is available. Ask an admin to fix it, then use the activator again.")
         return
     end
-    if type(info.maxNPCs) ~= "number" or info.maxNPCs < 1 or info.maxNPCs == math.huge then return end
+    if type(info.maxNPCs) ~= "number" or info.maxNPCs ~= info.maxNPCs or info.maxNPCs < 1 or info.maxNPCs == math.huge then return end
 
     clearSelectedBatch()
     local enemies = activeEnemies
