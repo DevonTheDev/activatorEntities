@@ -104,6 +104,14 @@ return function(gmod, test, eq)
         return table.concat(lines,"\n")
     end
     local function inspect(env,ply,kind) return privateSay(env,ply,"!listSpawns " .. kind.name) end
+    local function inspectUnavailable(env,ply,kind)
+        local getter,calls=ply.GetPos,0
+        ply.GetPos=function() calls=calls+1; error("unavailable list origin") end
+        local text=inspect(env,ply,kind)
+        ply.GetPos=getter
+        eq(calls,1,"one protected origin capture")
+        assert(text:find("distance unavailable",1,true),"unavailable distance still produces a valid listing")
+    end
     local function remove(env,ply,kind,key) return privateSay(env,ply,kind.remove .. " " .. tostring(key)) end
     local function lifecycle(env)
         local result={entities={},count=#env.entities,enemies=env.totalEnemies,activators=env.activatorCount,
@@ -323,7 +331,7 @@ return function(gmod, test, eq)
             local env,admin,second,_,ioState,current=fixture(); local client=gmod.new(true)
             local actor=ready(env,admin); local menu=open(env,client,admin,actor)
             local before=selection(env,admin); local state=lifecycle(env)
-            unchanged(env,ioState,function() inspect(env,second,kind) end)
+            unchanged(env,ioState,function() inspectUnavailable(env,second,kind) end)
             quietEngine(env,function() remove(env,second,kind,kind.middle) end)
             eq(current[kind.field][kind.middle],nil); sameLifecycle(env,state); eq(selection(env,admin),before)
             eq(menu.frame.valid,true); eq(#client.messages,0); eq(#ioState.writes,1)
@@ -345,7 +353,7 @@ return function(gmod, test, eq)
                 local enemies=env.ents.FindByName("devonsSpawnedEntity")
                 if interrupted then enemies[1]:Remove() end
                 local before=selection(env,admin); local state=lifecycle(env)
-                unchanged(env,ioState,function() inspect(env,second,kind) end)
+                unchanged(env,ioState,function() inspectUnavailable(env,second,kind) end)
                 quietEngine(env,function() remove(env,second,kind,kind.middle) end)
                 sameLifecycle(env,state); eq(selection(env,admin),before)
                 eq(current[kind.field][kind.middle],nil); eq(#ioState.writes,1)

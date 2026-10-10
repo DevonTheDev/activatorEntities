@@ -36,8 +36,23 @@ Back up the existing spawn data before testing changes.
 
 Use `!listSpawns enemy` to inspect the first eight enemy positions, or
 `!listSpawns enemy 2` for the next page. Use `activator` for the other list.
-Each row shows its actual stored key and coordinates. For example, after the
-list shows key `2`, walk to the replacement location and use `!moveEnemySpawn 2`.
+Each row keeps its actual stored key and exact coordinates, followed by an
+approximate 3D straight-line distance from your server position to that stored
+base, in Source world units. The whole page uses one position snapshot taken
+at list time. Walk and list the same page again to see distances change. An
+unusable player position or an unrepresentable distance shows `distance unavailable`;
+the coordinates and ordinary inspection/edit permissions remain usable.
+
+These are distances to configured bases, not live NPC locations or a prediction
+of which base a later spawn will sample. Activators use their stored position as
+the placement input. Enemy placement starts from one sampled base and advances
+by `(30, 30, 0)` for every valid creation: the first uses base + `(30, 30, 0)`,
+the second base + `(60, 60, 0)`, and so on. A distance does not check navigation,
+collision clearance or whether an NPC can reach the point. There is no live
+marker or periodic update; earlier chat output remains a historical snapshot.
+
+For example, after the list shows key `2`, walk to the replacement location and
+use `!moveEnemySpawn 2`.
 That point keeps its key, the number of points stays the same, and every other
 point keeps its key and coordinates. Use `!moveActivatorSpawn 2` for a freshly
 inspected activator point. To delete or add a point instead, use the existing
@@ -87,8 +102,11 @@ persistence and world placement still need a disposable Garry's Mod server
 check. On that server, have two admins list and move a middle point, trigger a
 stale inspection with another edit, and restart to verify persistence. Repeat
 for both point kinds, verify future spawns use the edited point, and check that
-existing actors and an active encounter continue normally. Enemy spawns retain
-their existing `(30, 30, 0)` placement offset from the stored point.
+existing actors and an active encounter continue normally. Have both admins
+list from different locations, move and relist, and verify each sees only their
+own updated base distances with the same keys and coordinates. Include vertical
+separation and verify readable private chat rows and the cumulative enemy
+placement offset described above.
 
 ### Apply changes to a fresh ready batch
 
@@ -458,6 +476,13 @@ shrink/grow cycles, distinct action bounds, complete configured text, and native
 wrap/scroll setup. They inspect panel geometry and API configuration, not rendered
 font metrics, scrollbar reachability, pointer routing or model pixels. Native
 DFrame and DLabel Think behavior remains responsible for their normal updates.
+Spawn-distance tests cover known 3D and vertical distances, movement and private
+per-admin snapshots, one protected position capture, copied scalar coordinates,
+sorted pages, exact coordinate tokens, and preserved inspection grants. They
+also exercise malformed/throwing positions, tiny and huge finite distances,
+subtraction/norm overflow, and unchanged ready/active encounter behavior with
+unavailable distances. Scaled distance arithmetic avoids intermediate square
+overflow; only the approximate suffix uses compact formatting.
 Only in-memory file/codec doubles and test fixtures are used; the tests never
 read or write a server's DATA directory. They exercise the addon at the codec
 boundary, not Garry's Mod's actual JSON parser or filesystem.

@@ -254,6 +254,33 @@ local function invalidateSpawnInspections(map, kind)
     end
 end
 
+-- Copy scalars once so every row uses the same server-side position snapshot.
+local function spawnListOrigin(sender)
+    local ok, x, y, z = pcall(function()
+        local position = sender:GetPos()
+        if not isvector(position) then return end
+        local px, py, pz = position.x, position.y, position.z
+        if finiteNumber(px) and finiteNumber(py) and finiteNumber(pz) then return px, py, pz end
+    end)
+    if ok then return x, y, z end
+end
+
+local function spawnBaseDistance(position, x, y, z)
+    if x == nil then return "distance unavailable" end
+    -- Use floating subtraction and a scaled norm, avoiding integer wrap and
+    -- intermediate square overflow when the final distance is representable.
+    local dx, dy, dz = position.x * 1.0 - x, position.y * 1.0 - y, position.z * 1.0 - z
+    if not finiteNumber(dx) or not finiteNumber(dy) or not finiteNumber(dz) then return "distance unavailable" end
+    local scale = math.max(math.abs(dx), math.abs(dy), math.abs(dz))
+    local distance = 0
+    if scale > 0 then
+        dx, dy, dz = dx / scale, dy / scale, dz / scale
+        distance = scale * math.sqrt(dx * dx + dy * dy + dz * dz)
+    end
+    if not finiteNumber(distance) then return "distance unavailable" end
+    return "~" .. string.format("%.6g", distance) .. " units away"
+end
+
 local function printSpawnList(sender, text)
     spawnInspections[sender] = nil
     local kind, argument = text:match("^!listSpawns%s+(%S+)%s*(.-)%s*$")
@@ -285,6 +312,7 @@ local function printSpawnList(sender, text)
         sender:ChatPrint("Usage: !listSpawns " .. kind .. " [page]; page must be in 1-" .. pages .. ".")
         return
     end
+    local originX, originY, originZ = spawnListOrigin(sender)
     local shown, lines = {}, {}
     for i = (page - 1) * 8 + 1, math.min(page * 8, #keys) do
         local key, position = keys[i], positions[keys[i]]
@@ -295,6 +323,7 @@ local function printSpawnList(sender, text)
             return
         end
         local line = "Key " .. token .. ": x=" .. x .. ", y=" .. y .. ", z=" .. z
+            .. "; " .. spawnBaseDistance(position, originX, originY, originZ)
         if #line > 255 then
             sender:ChatPrint("Cannot inspect spawns: a position exceeds the chat line limit.")
             return
@@ -305,10 +334,12 @@ local function printSpawnList(sender, text)
     spawnInspections[sender] = {map = game.GetMap(), kind = kind, information = information,
         positions = positions, shown = shown}
     sender:ChatPrint("Current-map " .. kind .. " spawns, page " .. page .. "/" .. pages
-        .. " (" .. #keys .. " positions" .. (#keys == 0 and "; empty list" or "") .. ").")
+        .. " (" .. #keys .. " positions" .. (#keys == 0 and "; empty list" or "") .. ")."
+        .. " Approx. distance from you to stored bases at list time, in 3D Source units.")
     for _, line in ipairs(lines) do sender:ChatPrint(line) end
     sender:ChatPrint("Shown key: " .. spawnKinds[kind].remove .. " <key> to remove; " .. spawnKinds[kind].move
-        .. " <key> to move here. Copy the exact key; list again after any edit. Coordinates are not placement checks.")
+        .. " <key> to move here. Copy the exact key; list again after any edit. Coordinates are not placement checks."
+        .. (kind == "enemy" and " Enemy placement adds (30,30,0) cumulatively per valid creation." or ""))
 end
 
 local function inspectedSpawnTarget(sender, kind, token)

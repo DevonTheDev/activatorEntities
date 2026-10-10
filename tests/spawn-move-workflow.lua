@@ -214,6 +214,7 @@ return function(gmod,test,eq)
             local calls=0; admin.GetPos=function() calls=calls+1; return destination end
             local output=inspect(env,admin,kind); contains(output,"Key " .. kind.key .. ":")
             contains(output,kind.move .. " <key>")
+            eq(calls,1,"listing captures one origin"); calls=0
             local state=lifecycle(env); move(env,admin,kind)
             eq(calls,1,"GetPos captured once"); sameLifecycle(env,state)
             assert(rawequal(env.SpawnPositions,root) and rawequal(current,map) and rawequal(current[kind.field],list))

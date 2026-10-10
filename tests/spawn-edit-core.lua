@@ -250,7 +250,7 @@ return function(gmod, test, eq)
         end
         for _, line in ipairs(chats) do
             if line:match("^Key ") then
-                local x,y,z=line:match(": x=([^,]+), y=([^,]+), z=(.+)$")
+                local x,y,z=line:match(": x=([^,]+), y=([^,]+), z=([^;]+); ")
                 assert(x and y and z, "all coordinates are shown without truncation")
                 eq(tonumber(x), 1.2345678901234567); eq(tonumber(y), -1.7976931348623157e308); eq(tonumber(z), 2.2250738585072014e-308)
             end

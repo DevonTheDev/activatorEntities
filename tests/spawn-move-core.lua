@@ -93,6 +93,8 @@ return function(gmod, test, eq)
                 admin.GetPos=function() reads=reads+1; return destination end
                 env.Vector=function(x,y,z) copies=copies+1; return constructor(x,y,z) end
                 inspect(env,admin,kind)
+                eq(reads,1,"capture the listing origin exactly once"); eq(copies,0,"listing copies only scalars")
+                reads=0
                 local result=env.fire("PlayerSay",admin,kind.move .. " " .. key)
                 moved(positions[key],destination,before[key].point)
                 eq(result,"")
