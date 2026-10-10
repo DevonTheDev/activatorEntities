@@ -604,6 +604,8 @@ hook.Add("PlayerSay", "refreshReadyActivators", function(ply, text)
         adminLine(ply, "Cannot refresh activators during an active encounter. Finish it or use !stopEvent first.")
         return ""
     end
+    -- Retire in-flight automatic work before invoking removal callbacks.
+    spawnScheduleGeneration = spawnScheduleGeneration + 1
     clearSelectedBatch()
     destroyActivators()
     if automaticSpawnsPaused then
