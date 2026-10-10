@@ -114,10 +114,11 @@ Below are all the functions needed to run the code. It is suggested that you do 
 
 --]]
 
--- Return nil for missing/empty lists, and support sparse spawn-position tables.
+-- Return nil for non-table/empty lists, and support sparse spawn-position tables.
 local function randomValue(values)
+    if type(values) ~= "table" then return nil end
     local choices = {}
-    for _, value in pairs(values or {}) do
+    for _, value in pairs(values) do
         choices[#choices + 1] = value
     end
     if #choices == 0 then return nil end
@@ -126,12 +127,16 @@ end
 
 function determineRandomEvent()
     local event = randomValue(NPCEdits)
-    return event and event.name
+    if type(event) ~= "table" then return nil end
+    return event.name
 end
 
 function returnNPCInformation(NPCName)
-    for _, event in pairs(NPCEdits or {}) do
-        if event.name == NPCName then return event.information end
+    if type(NPCEdits) ~= "table" then return nil end
+    for _, event in pairs(NPCEdits) do
+        if type(event) == "table" and event.name == NPCName then
+            return type(event.information) == "table" and event.information or nil
+        end
     end
 end
 

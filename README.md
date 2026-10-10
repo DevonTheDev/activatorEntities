@@ -13,6 +13,19 @@ entry in `NPCEdits` can be selected by the timed spawner; custom event names are
 supported alongside the default `Raid`. Its model, dialogue, enemy class and
 count follow the selected definition.
 
+Encounter lookup treats a non-table `NPCEdits` pool, a non-table sampled record,
+or non-table information on the first matching name as unavailable. An automatic
+attempt then creates no activators; a manual actor with unavailable information
+uses the existing removal path. Lookup skips unrelated non-table records, so a
+valid explicit choice still works beside them. For a nonempty table pool, random
+selection keeps every entry and makes one draw; an unavailable pick is not retried
+or replaced with a fallback. Sparse sampling and the existing duplicate-name behavior are unchanged.
+The helpers do not repair or save configuration. A later attempt can work once
+valid definitions are available; restart after configuration edits because live
+Lua hot-reload is unsupported. These guards check only pool, record and information
+types. They do not validate event names or fields within an information table,
+including models, NPC classes, dialogue, counts or health.
+
 Admin chat commands:
 
 - `!setActivatorSpawn` / `!setEnemySpawn`: add your current position for this map
@@ -498,6 +511,13 @@ Automatic-schedule tests cover exact admin pause/resume commands, idempotence,
 due-callback gates, all restart paths, selected/pending ownership, current
 Start/Cancel grants, paused refresh with deferred removal, ordinary encounter
 retirement, and reentrant Spawn callbacks that pause or pause then resume.
+Encounter-definition tests exercise malformed pool, record and information types
+through actual timer and manual Spawn callbacks, including recovery, unchanged
+configuration, and absence of extra entity, encounter, network or persistence
+side effects. They preserve the ordinary manual-removal timer restart and paused
+behavior, sparse random sampling, one-draw rejection, valid explicit choices beside
+bad records and first-match duplicate lookup. Table-shaped information remains
+accepted without claiming its fields are engine-valid.
 Encounter-selection tests cover administrator permissions, exact and duplicate
 names, pending replacement/clear, partial and failed spawning, selected-batch
 refills, manual actors, deferred removal and current/future ownership. They also
@@ -617,6 +637,14 @@ test:
     With long text and explicit line breaks, scroll to the final line, resize
     while scrolled, and confirm all text remains reachable. Exercise Start and
     Cancel after resizing, then repeat the two-player retirement check in step 2.
+
+For a disposable-server definition-shape check, separately configure `NPCEdits`
+as a string, as `{true}`, and as `{{name="Raid", information=true}}` before
+startup. Check that automatic attempts produce no repeated Lua type errors, and
+that an unusable manually spawned activator is removed. Then restart with valid
+definitions and confirm normal activators and a player-started encounter. The
+local doubles do not establish native Initialize error handling or entity removal
+and replication timing; those behaviors still need this in-engine check.
 
 ## Remaining follow-ups
 
