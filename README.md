@@ -20,6 +20,7 @@ Admin chat commands:
 - `!listSpawns enemy|activator [page]`: privately inspect this map's configured positions
 - `!removeEnemySpawn <key>` / `!removeActivatorSpawn <key>`: remove one freshly inspected position
 - `!moveEnemySpawn <key>` / `!moveActivatorSpawn <key>`: move one freshly inspected position to where you are standing
+- `!saveSpawns`: privately retry the verified save of accepted spawn positions for all maps
 - `!stopEvent`: remove the current event's enemies and restart the spawn delay
 - `!refreshActivators`: retire ready addon activators and restart the normal spawn delay
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
@@ -264,14 +265,23 @@ need a live-server check.
 
 ### Saved spawn data and recovery
 
+Use the exact admin command `!saveSpawns` after correcting a transient save
+failure. It retries the complete accepted configuration, including empty lists,
+without another edit or shutdown. Extra arguments give private usage help.
+The command leaves points, inspection permissions, ready dialogues, active
+encounters, pending choices and timers unchanged. Its private success reply
+means this attempt verified the saved bytes; failure may follow an actual write,
+so check the server console. It does not force saving, restore a backup or bypass
+the failed-load lockout below.
+
 - The canonical filename is `garrysmod/data/devonsspawninfo.json`. Garry's Mod
   [lowercases `file.Write` paths](https://wiki.facepunch.com/gmod/file.Write),
   while [reads can be case-sensitive](https://wiki.facepunch.com/gmod/file.Read).
   If that file is absent, the historical `DevonsSpawnInfo.json` spelling is
   also checked. A present canonical file always takes precedence, even if it
   cannot be read or validated. A successfully loaded mixed-case file is left
-  in place; the next successful admin edit or clean shutdown writes the canonical
-  lowercase name.
+  in place; the next successful admin edit, `!saveSpawns` or clean shutdown
+  writes the canonical lowercase name.
 - The complete decoded file is checked before it replaces the configured
   `SpawnPositions`. Map records must have a nonempty string `map` and both
   `enemySpawnPositions` and `activatorSpawnPositions` tables. Map/position lists
@@ -314,7 +324,7 @@ need a live-server check.
 - A shutdown before initialization, invalid runtime spawn data, or serialization
   failure also skips writing. Write failures are reported without a success
   message. An immediate save failure keeps the accepted edit in memory and warns
-  its admin; the next successful edit or clean shutdown can retry saving. Empty
+  its admin; `!saveSpawns`, the next successful edit or clean shutdown can retry saving. Empty
   removals, non-admin requests, unrelated chat and event cancellation do not
   trigger writes. The backup is not an atomic transaction or a durability
   guarantee. Immediate read-back cannot prove that bytes will survive power
@@ -433,8 +443,10 @@ missing spawn configuration,
 admin spawn editing, and completion-popup replacement/one-shot cleanup. Persistence tests also cover invalid decoded structures,
 sparse native Vectors, intentionally empty lists, file-name precedence,
 read/serialization/write failures, immediate persistence of spawn-edit
-commands, session-only warnings, shutdown retry, and preservation after a
-rejected load.
+commands, session-only warnings, explicit save-only and shutdown retries, and
+preservation after a rejected load. Save-only cases retain both admins' existing
+inspection leases, actual ready Start/Cancel authority, active progress and
+pending selection across verified and failed attempts.
 Encounter-progress tests also cover actual spawned counts, every end path,
 unrelated/repeated NPC callbacks, late-join snapshots, request throttling and the
 client panel's update/clear/resize and input settings. Synthetic cross-realm

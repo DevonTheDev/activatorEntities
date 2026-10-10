@@ -74,6 +74,7 @@ return function(gmod, test, eq)
         end
         env.file.Write = function(path, bytes)
             state.log[#state.log+1] = {op="write", path=path, bytes=bytes}
+            if state.writeFails then return false end
             local fault = state.writeFaults[path]
             if fault then
                 -- Every failed write destroys prior contents, unlike a failed
@@ -127,7 +128,11 @@ return function(gmod, test, eq)
         local old="{ loaded workflow snapshot A }\n"
         local initial=sparse(env)
         if mode == "empty root" then initial={}
-        elseif mode == "empty lists" then initial[4].enemySpawnPositions={}; initial[4].activatorSpawnPositions={} end
+        elseif mode == "empty lists" then initial[4].enemySpawnPositions={}; initial[4].activatorSpawnPositions={}
+        elseif mode == "last enemy" then
+            initial[4].enemySpawnPositions={[10]=initial[4].enemySpawnPositions[10]}
+            initial[4].activatorSpawnPositions={}
+        end
         disk.register(old, initial)
         if mode == "legacy" then disk.files[legacy]=old
         elseif mode ~= "first" and mode ~= "orphan" then disk.files[canonical]=old end
@@ -212,7 +217,7 @@ return function(gmod, test, eq)
         end
         return table.concat(lines, "\n")
     end
-    local actorFields={"valid","markedForDeletion","pos","class","name","health","model","moveType","moveChanges","stopped","spawned","EventIdentifier","NPCInfo"}
+    local actorFields={"valid","markedForDeletion","pos","class","name","health","model","moveType","moveChanges","stopped","spawned","EventIdentifier","NPCInfo","admin","alive"}
     local function lifecycle(env, admin)
         local result={size=#env.entities, actors={}, timers=tree(env.timers), messages=#env.messages,
             receivers=tree(env.receivers), network=tree(env.networkStrings), enemies=env.totalEnemies,
@@ -508,6 +513,240 @@ return function(gmod, test, eq)
             eq(env.hooks.ShutDown.saveTheTables(),nil); eq(#disk.log,log,"lockout avoids all persistence I/O")
             eq(fingerprint(env,disk.files),files); eq(disk.encodes,0)
             eq(count(disk,"read",legacy),0); eq(count(disk,"read",backup),0)
+        end)
+    end
+
+    -- These cases all enter through the real PlayerSay hook. The prefix also
+    -- permits a focused red/green run without repeating the complete suite.
+    local function retry(env, disk, admin, successful)
+        local encodes=disk.encodes
+        local response=privateSay(env,admin,"!saveSpawns")
+        if successful then
+            contains(response,"verified"); contains(response,"all maps")
+            eq(disk.encodes,encodes+1,"one complete save attempt per command")
+        else
+            contains(response,"could not be verified"); contains(response,"console")
+            assert(not response:find("untouched",1,true),"failed verification may follow a write")
+            assert(not response:find("memory only",1,true),"failed verification does not prove bytes are absent")
+        end
+        return response
+    end
+    local function reload(env, disk)
+        local fresh=gmod.new(); local storageCopy=storage(fresh)
+        local bytes=disk.files[canonical]
+        local function intoFresh(value)
+            if env.isvector(value) then return fresh.Vector(value.x,value.y,value.z) end
+            if type(value) ~= "table" then return value end
+            local result={}
+            for key,child in pairs(value) do result[key]=intoFresh(child) end
+            return result
+        end
+        storageCopy.register(bytes,intoFresh(disk.snapshot(bytes))); storageCopy.files[canonical]=bytes
+        fresh.fire("Initialize")
+        eq(#fresh.errors,0,"saved candidate reloads successfully")
+        eq(fingerprint(fresh,fresh.SpawnPositions),fingerprint(env,env.SpawnPositions),"reload retains every sparse map and Vector")
+        return fresh
+    end
+
+    test("save retry persists accepted final removal as empty lists after storage recovers",function()
+        local env,disk,admin,_,_,old=fixture("last enemy")
+        disk.writeFails=true
+        contains(edit(env,admin,kinds[1],"bare removal"),"remains in memory")
+        eq(next(env.SpawnPositions[4].enemySpawnPositions),nil)
+        eq(next(env.SpawnPositions[4].activatorSpawnPositions),nil)
+        eq(disk.files[canonical],old,"failed open leaves previous canonical data")
+        disk.writeFails=false
+        noIO(disk,function()
+            contains(edit(env,admin,kinds[1],"bare removal"),"no more")
+            inspect(env,admin,kinds[1]); inspect(env,admin,kinds[2])
+        end)
+        local positions=tree(env.SpawnPositions); local before=lifecycle(env,admin); local first=#disk.log
+        retry(env,disk,admin,true)
+        sameTree(env.SpawnPositions,positions); sameLifecycle(env,admin,before)
+        verifiedOrder(disk,first,old,disk.files[canonical]); eq(disk.files[backup],old)
+        local fresh=reload(env,disk)
+        eq(next(fresh.SpawnPositions[4].enemySpawnPositions),nil)
+        eq(next(fresh.SpawnPositions[4].activatorSpawnPositions),nil)
+        eq(fresh.SpawnPositions[19].enemySpawnPositions[10].x,6,"other map is saved too")
+        local writes=count(disk,"write"); retry(env,disk,admin,true)
+        eq(count(disk,"write"),writes,"byte-identical retry does not rotate predecessor")
+        eq(disk.files[backup],old); sameTree(env.SpawnPositions,positions)
+    end)
+
+    test("save retry is discoverable in the bounded accepted-edit failure warning",function()
+        local env,disk,admin=fixture(); disk.writeFails=true
+        inspect(env,admin,kinds[2])
+        contains(move(env,admin,kinds[2]),"!saveSpawns")
+    end)
+
+    for _,mode in ipairs({"empty root","empty lists","first","orphan","legacy"}) do
+        test("save retry verifies complete " .. mode .. " configuration without an edit",function()
+            local env,disk,admin,_,_,old=fixture(mode)
+            local positions=tree(env.SpawnPositions); local before=lifecycle(env,admin)
+            local originalBackup=disk.files[backup]
+            retry(env,disk,admin,true); sameTree(env.SpawnPositions,positions); sameLifecycle(env,admin,before)
+            reload(env,disk)
+            if mode == "empty root" or mode == "empty lists" then eq(count(disk,"write"),0)
+            elseif mode == "legacy" then eq(disk.files[backup],old); eq(disk.files[legacy],old)
+            else eq(disk.files[backup],originalBackup); eq(count(disk,"write",backup),0) end
+        end)
+    end
+
+    for _,failure in ipairs({"false","truncated true","read nil"}) do
+        test("save retry retains prepared predecessor across canonical " .. failure .. " then verifies recovery",function()
+            local env,disk,admin,_,_,old=fixture()
+            admin:SetPos(env.Vector(601,602,603)); inspect(env,admin,kinds[1])
+            if failure == "read nil" then disk.readFaults[canonical]="nil"
+            else disk.writeFaults[canonical]=failure end
+            contains(move(env,admin,kinds[1]),"remains in memory")
+            local positions=tree(env.SpawnPositions); local before=lifecycle(env,admin)
+            local encodes=disk.encodes; local writes=count(disk,"write",canonical)
+            retry(env,disk,admin,false); eq(disk.encodes,encodes+1)
+            eq(count(disk,"write",canonical),writes+1); eq(count(disk,"write",backup),1)
+            eq(disk.files[backup],old)
+            if failure == "read nil" then
+                eq(disk.snapshot(disk.files[canonical])[4].enemySpawnPositions[10].x,601,"failed readback may follow a full write")
+            else contains(disk.files[canonical],"partial:") end
+            disk.writeFaults[canonical]=nil; disk.readFaults[canonical]=nil
+            retry(env,disk,admin,true); eq(count(disk,"write",backup),1); eq(disk.files[backup],old)
+            sameTree(env.SpawnPositions,positions); sameLifecycle(env,admin,before); reload(env,disk)
+            writes=count(disk,"write"); retry(env,disk,admin,true); eq(count(disk,"write"),writes)
+        end)
+    end
+
+    for _,damage in ipairs({"tampered","nil","throw"}) do
+        test("save retry refuses a " .. damage .. " prepared backup until exact predecessor is restored",function()
+            local env,disk,admin,_,_,old=fixture()
+            disk.writeFaults[canonical]="false"; contains(edit(env,admin,kinds[1],"bare removal"),"remains in memory")
+            disk.writeFaults[canonical]=nil
+            if damage == "tampered" then disk.files[backup]="externally changed recovery bytes"
+            else disk.readFaults[backup]=damage end
+            local positions=tree(env.SpawnPositions); local files=fingerprint(env,disk.files); local writes=count(disk,"write")
+            retry(env,disk,admin,false)
+            eq(count(disk,"write"),writes); eq(fingerprint(env,disk.files),files); sameTree(env.SpawnPositions,positions)
+            disk.files[backup]=old; disk.readFaults[backup]=nil
+            retry(env,disk,admin,true); eq(count(disk,"write",backup),1); reload(env,disk)
+        end)
+    end
+
+    for _,failure in ipairs({"uninitialized","corrupt load","unreadable load","invalid runtime"}) do
+        test("save retry preserves " .. failure .. " lockout with no codec or filesystem access",function()
+            local env=gmod.new(); local disk=storage(env)
+            local good=disk.register("valid repaired bytes",sparse(env))
+            disk.files[canonical]=good
+            if failure == "corrupt load" then disk.files[canonical]="corrupt bytes" end
+            if failure == "unreadable load" then disk.readFaults[canonical]="nil" end
+            if failure ~= "uninitialized" then env.fire("Initialize") end
+            if failure == "invalid runtime" then env.SpawnPositions[19].enemySpawnPositions[10].x=math.huge end
+            -- Repairing a rejected load on disk cannot unlock this session.
+            disk.files[canonical]=good; disk.readFaults[canonical]=nil
+            local admin=env.entity("player"); admin.admin=true
+            local positions=tree(env.SpawnPositions); local errors=#env.errors
+            noIO(disk,function() retry(env,disk,admin,false) end)
+            eq(#env.errors,errors+1,"one existing save rejection per command")
+            sameTree(env.SpawnPositions,positions); eq(disk.files[canonical],good)
+        end)
+    end
+
+    for _,failure in ipairs({"throw","nil","empty","unknown token","bad schema"}) do
+        test("save retry rejects candidate " .. failure .. " before file access",function()
+            local env,disk,admin=fixture(); disk.encodeFault=failure
+            local positions=tree(env.SpawnPositions); local writes=count(disk,"write")
+            local reads=count(disk,"read"); local exists=count(disk,"exists")
+            retry(env,disk,admin,false)
+            eq(disk.encodes,1); eq(count(disk,"write"),writes); eq(count(disk,"read"),reads); eq(count(disk,"exists"),exists)
+            sameTree(env.SpawnPositions,positions)
+        end)
+    end
+
+    test("save retry requires a current admin and ignores invalid or non-player senders before I/O",function()
+        local env,disk,admin,_,observer=fixture()
+        noIO(disk,function()
+            contains(privateSay(env,observer,"!saveSpawns"),"Only admins")
+            inspect(env,admin,kinds[1]); admin.admin=false
+            contains(privateSay(env,admin,"!saveSpawns"),"Only admins")
+            eq(admin.admin,false,"save denial cannot restore revoked admin authority")
+            local invalid=env.entity("player"); invalid.admin=true; invalid.valid=false
+            local prop=env.entity("prop_physics"); prop.admin=true
+            eq(say(env,invalid,"!saveSpawns"),""); eq(#invalid.chats,0)
+            eq(say(env,prop,"!saveSpawns"),""); eq(#prop.chats,0)
+            eq(say(env,nil,"!saveSpawns"),"")
+        end)
+    end)
+
+    test("save retry rejects every extra argument privately before codec or file access",function()
+        local env,disk,admin=fixture(); local positions=tree(env.SpawnPositions)
+        noIO(disk,function()
+            for _,suffix in ipairs({" force"," restore"," other_map"," now please"," ","\t","\n"}) do
+                contains(privateSay(env,admin,"!saveSpawns" .. suffix),"Usage: !saveSpawns")
+            end
+        end)
+        sameTree(env.SpawnPositions,positions)
+    end)
+
+    test("save retry leaves similar commands and unrelated chat unhandled without I/O",function()
+        local env,disk,admin=fixture(); local chats=#admin.chats
+        noIO(disk,function()
+            for _,text in ipairs({"!saveSpawnsNow","!savespawns","!saveSpawns!"," !saveSpawns","ordinary chat"}) do
+                eq(say(env,admin,text),nil)
+            end
+        end)
+        eq(#admin.chats,chats)
+    end)
+
+    for _,kind in ipairs(kinds) do
+        for _,who in ipairs({"first","second"}) do
+            for _,failure in ipairs({false,true}) do
+                test("save retry retains " .. who .. " admin's " .. kind.name .. " inspection after " .. (failure and "failed" or "verified") .. " saving",function()
+                    local env,disk,admin,second=fixture()
+                    inspect(env,admin,kind); inspect(env,second,kind)
+                    if failure then disk.encodeFault="nil" end
+                    local positions=tree(env.SpawnPositions)
+                    retry(env,disk,admin,not failure); sameTree(env.SpawnPositions,positions)
+                    disk.encodeFault=nil
+                    local editor=who == "first" and admin or second
+                    editor:SetPos(env.Vector(701,702,703))
+                    contains(move(env,editor,kind),"successfully moved")
+                    eq(env.SpawnPositions[4][kind.field][kind.key].x,701)
+                end)
+            end
+        end
+    end
+
+    for _,failure in ipairs({false,true}) do
+        for _,action in ipairs({"Start","Cancel"}) do
+            test("save retry preserves open " .. action .. " authority during " .. (failure and "failed" or "verified") .. " saving",function()
+                local env,disk,admin,second,observer=fixture(); local menu=readyDialogue(env,admin)
+                if failure then disk.encodeFault="nil" end
+                local positions=tree(env.SpawnPositions); local before=lifecycle(env,admin)
+                retry(env,disk,second,not failure)
+                sameTree(env.SpawnPositions,positions); sameLifecycle(env,admin,before)
+                eq(menu.frame.valid,true); eq(menu.start.valid,true); eq(menu.quit.valid,true)
+                if action == "Start" then
+                    env.receive("SendNPCInformation",observer,"Ambush"); eq(env.totalEnemies,0)
+                    local enemies=startDialogue(env,admin,menu); finishRound(env,admin,enemies)
+                else
+                    menu.quit:DoClick(); eq(menu.frame.valid,false)
+                    local request=menu.client.messages[#menu.client.messages]; eq(request.name,"CloseInteractionMenu")
+                    env.deliver(request,admin)
+                    env.receive("SendNPCInformation",admin,"Ambush"); eq(env.totalEnemies,0)
+                    eq(#env.ents.FindByClass("activatorent"),3)
+                end
+            end)
+        end
+    end
+
+    for _,failure in ipairs({false,true}) do
+        test("save retry preserves active progress and pending selection during " .. (failure and "failed" or "verified") .. " saving",function()
+            local env,disk,admin,second=fixture(); local menu=readyDialogue(env,admin)
+            local enemies=startDialogue(env,admin,menu)
+            env.fire("OnNPCKilled",enemies[1],admin); eq(env.totalEnemies,1)
+            if failure then disk.encodeFault="nil" end
+            local positions=tree(env.SpawnPositions); local before=lifecycle(env,admin)
+            retry(env,disk,second,not failure)
+            sameTree(env.SpawnPositions,positions); sameLifecycle(env,admin,before)
+            env.receive("SendNPCInformation",admin,"Ambush"); eq(env.totalEnemies,1,"save does not replenish consumed Start permission")
+            finishRound(env,admin,{enemies[2]})
         end)
     end
 end

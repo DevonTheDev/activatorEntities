@@ -378,7 +378,7 @@ end)
 local saveSpawnPositions
 local function confirmSpawnEdit(sender, message)
     if not saveSpawnPositions() then
-        message = message .. " This change remains in memory; saving failed, is disabled or could not be verified. Check the server console."
+        message = message .. " This change remains in memory; saving failed, is disabled or could not be verified. Retry: !saveSpawns; check the server console."
     end
     sender:ChatPrint(message)
 end
@@ -387,6 +387,21 @@ end
 hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if type(text) ~= "string" then return end
     local name = text:match("^(!%S+)")
+    if name == "!saveSpawns" then
+        if not IsValid(sender) or not sender:IsPlayer() then return "" end
+        if not sender:IsAdmin() then
+            sender:ChatPrint("Only admins can save spawn positions.")
+            return ""
+        end
+        if text ~= name then
+            sender:ChatPrint("Usage: !saveSpawns (save spawn positions for all maps).")
+        elseif saveSpawnPositions() then
+            sender:ChatPrint("Spawn save verified for all maps.")
+        else
+            sender:ChatPrint("Spawn saving could not be verified. Check the server console.")
+        end
+        return ""
+    end
     local moving = name == "!moveEnemySpawn" and "enemy" or (name == "!moveActivatorSpawn" and "activator")
     local kind = moving or (name == "!removeEnemySpawn" and "enemy" or (name == "!removeActivatorSpawn" and "activator"))
     local indexed = kind and (moving or text ~= name)
