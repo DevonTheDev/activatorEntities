@@ -2,7 +2,7 @@
 
 A Garry's Mod addon that spawns activator NPCs. Players use an activator to start
 an enemy encounter. After the tracked enemies are killed, the next activators
-appear after the configured delay.
+appear after the configured delay when automatic spawning is enabled.
 
 ## Install and configure
 
@@ -21,12 +21,13 @@ Admin chat commands:
 - `!removeEnemySpawn <key>` / `!removeActivatorSpawn <key>`: remove one freshly inspected position
 - `!moveEnemySpawn <key>` / `!moveActivatorSpawn <key>`: move one freshly inspected position to where you are standing
 - `!saveSpawns`: privately retry the verified save of accepted spawn positions for all maps
-- `!stopEvent`: remove the current event's enemies and restart the spawn delay
-- `!refreshActivators`: retire ready addon activators and restart the normal spawn delay
+- `!stopEvent`: remove the current event's enemies; restart the spawn delay unless paused
+- `!refreshActivators`: retire ready addon activators; restart the normal spawn delay unless paused
+- `!pauseActivatorSpawns` / `!resumeActivatorSpawns`: pause or resume automatic activator spawning for this session
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
 - `!listEvents [page]`: browse all configured names and their selection eligibility
 - `!clearNextEvent`: clear that pending choice
-- `!eventStatus`: inspect the active encounter, ready activators and pending choice
+- `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
 - `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
 
 Accepted spawn additions, removals and moves attempt a verified save immediately
@@ -117,9 +118,11 @@ of every addon `activatorent`, including manually spawned ones, and clears the
 selected ready batch. The pending next encounter stays queued. Other NPC types,
 spawn data and persistence settings are unaffected.
 
-The command restarts the ordinary timer, including when no activators are
-present. It does not spawn immediately or start an encounter. The next normal
-attempt still requires enough players, usable configuration and spawn positions,
+When automatic spawning is enabled, the command restarts the ordinary timer,
+including when no activators are present. While paused, it keeps spawning paused
+and says so in its private reply. It does not spawn immediately or start an
+encounter. The next normal attempt still requires enough players, usable
+configuration and spawn positions,
 and available capacity. A pending choice is consumed only after a fresh
 activator successfully spawns. Use `!eventStatus` to inspect blocked conditions.
 
@@ -130,8 +133,9 @@ Extra arguments to `!refreshActivators` produce usage help without refreshing.
 Old interaction grants are cleared before removal starts. Removal can remain
 pending until the [next engine tick](https://wiki.facepunch.com/gmod/Entity:Remove),
 so the reply reports a request rather than immediate disappearance. The
-[existing timer is restarted](https://wiki.facepunch.com/gmod/timer.Start);
-the command does not bypass its configured delay. Open client dialogues retire
+[existing timer is restarted](https://wiki.facepunch.com/gmod/timer.Start) only
+when spawning is enabled; the command does not bypass its configured delay.
+Open client dialogues retire
 through their existing actor-removal/liveness handling.
 
 Local command and workflow tests use engine doubles. A disposable Garry's Mod
@@ -139,6 +143,43 @@ server is still needed to check native timer timing, replicated removal, open
 dialogue retirement and chat-addon interaction. Include a manually spawned
 activator, queue a different encounter, refresh after moving a point, and verify
 that only a later ordinary spawn uses the new position and queued definition.
+
+### Pause automatic activator spawning
+
+Use `!pauseActivatorSpawns` to hold new automatic batches while editing spawn
+points or staging an encounter. Pause stops the automatic timer and blocks an
+already-due callback. It leaves ready and manually spawned activators usable,
+preserves existing Start/Cancel interactions and queued selections, and lets
+active fights finish normally. It does not remove entities or change spawn
+data, configuration, progress or victory rules.
+
+For a clear arena, pause first, use `!stopEvent` separately if a fight is active,
+then use `!refreshActivators` to retire ready actors. Both commands keep automatic
+spawning paused. You can now edit positions and queue `!nextEvent <name>`.
+`!eventStatus` shows `paused` or `enabled` independently of the active, ready and
+pending encounter details.
+
+Use `!resumeActivatorSpawns` when ready. With no active encounter, it restarts the
+existing timer with its full configured delay; it never spawns immediately. If a
+fight is active, the delay starts when that encounter ends. The next attempt
+still checks players, capacity, positions and selection eligibility. Pending
+selection is consumed only by a usable fresh actor. Repeating either command
+does not reset the delay or restart a timer stopped because its capacity is full.
+Both commands require an admin and accept no extra arguments. Pause lasts only
+for this server/addon session; a fresh session starts enabled.
+
+If another addon's synchronous Spawn callback pauses spawning, the actor already
+being set up may finish normally, but that old attempt cannot add another actor.
+A pause followed by resume in the same callback leaves further admissions to the
+new delay and cannot let the old attempt stop the restarted timer.
+
+The [stop operation rewinds the timer](https://wiki.facepunch.com/gmod/timer.Stop),
+and [start restarts it](https://wiki.facepunch.com/gmod/timer.Start). Source-level
+tests check these calls and callback ordering through doubles. Native elapsed
+timing, server hibernation and replicated removal still require a disposable
+Garry's Mod server: pause and refresh, wait beyond the configured delay, verify
+no replacement, resume and verify replacement only after the full delay. Repeat
+with a fight ending while paused and check the private admin replies.
 
 ### Choose the next encounter
 
@@ -163,8 +204,9 @@ change a selected batch already waiting on the map. `!stopEvent` leaves the
 future choice intact. If a selected definition becomes unavailable, it is
 reported as unavailable rather than silently replaced with a random choice.
 
-`!eventStatus` reports a snapshot of the actual current state, including mixed
-ready encounter names where applicable. It does not choose a random event,
+`!eventStatus` reports a snapshot of the actual current state, including whether
+automatic spawning is paused or enabled and mixed ready encounter names where
+applicable. It does not choose a random event,
 restart a timer, change permissions, or save data.
 
 It also explains the current conditions for an automatic activator spawn:
@@ -218,7 +260,8 @@ ownership and never looks up a new entity by a potentially reused index.
 Cleanup immediately marks the encounter **interrupted**, so finishing its survivors
 cannot award the ordinary victory notice. Remaining counts change only when the
 existing kill/removal hooks run; an engine removal request may be deferred. Once the
-last enemy is accounted for, the normal spawn delay resumes and the queued encounter
+last enemy is accounted for, the normal spawn delay resumes unless automatic
+spawning is paused, and the queued encounter
 can appear on its ordinary eligible attempt. The acknowledgement is private and
 reports a removal request, without the full-event deletion announcement used by
 `!stopEvent`.
@@ -372,7 +415,7 @@ power-loss durability; do not crash a production server to test it.
   actor that remains invalid ([Facepunch removal-hook documentation](https://wiki.facepunch.com/gmod/GM:EntityRemoved)).
 - Only NPCs actually spawned for the active event affect its count. World/NPC
   kills are supported. A victory notice is sent once, only if all tracked
-  enemies were killed. Cleanup/removal and admin cancellation restart spawning
+  enemies were killed. Cleanup/removal and admin cancellation restart spawning unless paused
   without announcing a victory. The completion popup closes after five seconds;
   a newer completion replaces it and restarts that one-shot dismissal.
 - Missing/empty spawn lists safely pause spawning. Missing enemy spawns leave
@@ -451,6 +494,10 @@ Encounter-progress tests also cover actual spawned counts, every end path,
 unrelated/repeated NPC callbacks, late-join snapshots, request throttling and the
 client panel's update/clear/resize and input settings. Synthetic cross-realm
 delivery checks the protocol fields without claiming real engine networking.
+Automatic-schedule tests cover exact admin pause/resume commands, idempotence,
+due-callback gates, all restart paths, selected/pending ownership, current
+Start/Cancel grants, paused refresh with deferred removal, ordinary encounter
+retirement, and reentrant Spawn callbacks that pause or pause then resume.
 Encounter-selection tests cover administrator permissions, exact and duplicate
 names, pending replacement/clear, partial and failed spawning, selected-batch
 refills, manual actors, deferred removal and current/future ownership. They also

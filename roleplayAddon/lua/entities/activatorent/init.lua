@@ -18,6 +18,9 @@ local interactions = {}
 local activeEnemies = {}
 local constructingEnemies
 local eventActive = false
+-- Session-only control; timer stops for encounters/capacity are independent.
+local automaticSpawnsPaused = false
+local spawnScheduleGeneration = 0
 local eventInterrupted = false
 local activeEventName
 local initialEnemies = 0
@@ -271,6 +274,7 @@ local function printSpawnConditions(ply, count, readyName)
         capacityCondition = maximum .. " (" .. condition .. ")"
     end
     adminLine(ply, "Automatic spawn, next normal attempt: "
+        .. (automaticSpawnsPaused and "paused; " or "enabled; ")
         .. (eventActive and "active encounter (blocked)" or "no active encounter")
         .. "; players " .. players .. "/min " .. playerCondition
         .. "; activators " .. count .. "/cap " .. capacityCondition .. ".")
@@ -550,6 +554,40 @@ function destroyActivators()
     activatorCount = 0
 end
 
+-- Pause only automatic admissions; existing encounters and Use grants stay live.
+hook.Add("PlayerSay", "controlAutomaticActivatorSpawns", function(ply, text)
+    local command = text:match("^(!%S+)")
+    if command ~= "!pauseActivatorSpawns" and command ~= "!resumeActivatorSpawns" then return end
+    if not IsValid(ply) or not ply:IsPlayer() then return end
+    if not ply:IsAdmin() then
+        adminLine(ply, "Only admins can pause or resume automatic activator spawning.")
+        return ""
+    end
+    if text ~= command then
+        adminLine(ply, "Usage: " .. command)
+        return ""
+    end
+    local pause = command == "!pauseActivatorSpawns"
+    if automaticSpawnsPaused == pause then
+        adminLine(ply, pause and "Automatic activator spawning is already paused."
+            or "Automatic activator spawning is already enabled.")
+        return ""
+    end
+    automaticSpawnsPaused = pause
+    -- Invalidate an attempt even if a Spawn callback pauses and resumes at once.
+    spawnScheduleGeneration = spawnScheduleGeneration + 1
+    if pause then
+        timer.Stop("activatorSpawner")
+        adminLine(ply, "Automatic activator spawning paused. Existing activators and encounters remain usable.")
+    elseif eventActive then
+        adminLine(ply, "Automatic activator spawning enabled. The normal spawn delay starts after the active encounter ends.")
+    else
+        timer.Start("activatorSpawner")
+        adminLine(ply, "Automatic activator spawning enabled. Normal spawn delay restarted; ordinary spawn conditions still apply.")
+    end
+    return ""
+end)
+
 -- Retire ready authority before removal callbacks; the normal timer owns replacement.
 hook.Add("PlayerSay", "refreshReadyActivators", function(ply, text)
     if text:match("^(!%S+)") ~= "!refreshActivators" then return end
@@ -568,8 +606,12 @@ hook.Add("PlayerSay", "refreshReadyActivators", function(ply, text)
     end
     clearSelectedBatch()
     destroyActivators()
-    timer.Start("activatorSpawner")
-    adminLine(ply, "Ready activator removal requested (including manual activators). Normal spawn delay restarted; the next attempt still requires ordinary spawn conditions.")
+    if automaticSpawnsPaused then
+        adminLine(ply, "Ready activator removal requested (including manual activators). Automatic spawning remains paused; use !resumeActivatorSpawns when ready.")
+    else
+        timer.Start("activatorSpawner")
+        adminLine(ply, "Ready activator removal requested (including manual activators). Normal spawn delay restarted; the next attempt still requires ordinary spawn conditions.")
+    end
     return ""
 end)
 
@@ -582,7 +624,7 @@ local function finishEvent(completed)
     totalEnemies = 0
     initialEnemies = 0
     activeEventName = nil
-    timer.Start("activatorSpawner")
+    if not automaticSpawnsPaused then timer.Start("activatorSpawner") end
     sendEventStatus()
     if completed then
         net.Start("roundFinished")
@@ -676,7 +718,8 @@ end)
 
 -- Spawn only the missing activators, never more than the configured cap.
 timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
-    if eventActive or player.GetCount() < returnMinNumberOfPlayers() then return end
+    if automaticSpawnsPaused or eventActive or player.GetCount() < returnMinNumberOfPlayers() then return end
+    local generation = spawnScheduleGeneration
     refreshSelectedBatch()
     activatorCount = 0
     for _, ent in pairs(ents.FindByClass("activatorent")) do
@@ -697,6 +740,7 @@ timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
     local maximum = returnMaxActivators() or 1
     for i = activatorCount + 1, maximum do
         -- A previous Spawn callback may have made the next sample unavailable.
+        if automaticSpawnsPaused or generation ~= spawnScheduleGeneration then return end
         if not spawnPosition then break end
         local activator = ents.Create("activatorent")
         if IsValid(activator) then
@@ -709,9 +753,13 @@ timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
                 -- Spawn can run other addon callbacks that replace/clear pending.
                 if pendingSelection == admittedSelection then pendingSelection = nil end
             end
+            -- Finish ownership for the admitted actor, then retire a paused or
+            -- superseded attempt before further RNG, admissions or timer.Stop.
+            if automaticSpawnsPaused or generation ~= spawnScheduleGeneration then return end
             spawnPosition = returnActivatorSpawns(game.GetMap())
         end
     end
+    if automaticSpawnsPaused or generation ~= spawnScheduleGeneration then return end
     activatorCount = 0
     for _, ent in pairs(ents.FindByClass("activatorent")) do
         if usableActivator(ent) then activatorCount = activatorCount + 1 end
@@ -750,7 +798,7 @@ hook.Add("EntityRemoved", "clearRemovedEventEntities", function(ent)
     elseif ent:GetClass() == "activatorent" and not eventActive then
         -- EntityRemoved fires before the departing entity becomes invalid.
         refreshSelectedBatch(ent)
-        timer.Start("activatorSpawner")
+        if not automaticSpawnsPaused then timer.Start("activatorSpawner") end
     end
     for ply, interaction in pairs(interactions) do
         if interaction.entity == ent then interactions[ply] = nil end
