@@ -48,6 +48,7 @@ Admin chat commands:
 - `!pauseActivatorSpawns` / `!resumeActivatorSpawns`: pause or resume automatic activator spawning for this session
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
 - `!nextEventRef <ref>`: queue an eligible entry from your latest catalog page
+- `!inspectEventRef <ref>`: privately inspect its configured model, enemy class and requested count
 - `!listEvents [page]`: browse all configured names and their selection eligibility
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
@@ -353,6 +354,53 @@ interaction with a deployed chat addon still need a disposable-server check:
 have two admins list independently, select a long or escaped name by its ref,
 try a stale/refreshed/expired ref, and confirm a queued choice waits for the next
 ordinary fresh batch while ready actors and active encounters stay unchanged.
+
+### Inspect one configured encounter
+
+Copy an eligible reference from your latest `!listEvents` page into
+`!inspectEventRef r0000000000000012-3`. This exact admin command accepts one
+reference, with optional surrounding whitespace. It replies privately with five
+short rows: a **configuration snapshot** of the event name, `activatorModel`,
+`npcPath` (the enemy class), `maxNPCs` (the requested count), and a scope reminder.
+It reads the current configured base values, including ordinarily inherited
+properties, before emitting any details. A throwing configuration getter is
+reported as unavailable without exposing its error text.
+
+Missing fields, empty model/class strings and invalid field types are identified
+without serializing tables or calling their string-conversion callbacks.
+`maxNPCs` must be a finite number at least 1 to pass the existing Start count
+check. Finite fractions keep their existing floor behavior: 2.75 means two
+creation attempts. Numeric labels retain enough precision to distinguish a
+fraction just below an integer from that integer. This is a configured request, not a promise of that many
+spawned enemies or an additional count cap. Models/classes remain **engine
+unchecked**: the command does not check assets, physics or native NPC validity,
+and never calls the potentially random health helper or expands dialogue.
+
+Each line is at most 255 bytes. Valid UTF-8 characters stay intact when a long
+label is shortened, and `[truncated]` says that the displayed value is incomplete.
+Control-bearing labels use an explicitly escaped diagnostic representation;
+these labels are not raw model paths, class names or event-name input. The raw
+configuration is unchanged. Native arbitrary malformed byte-string rendering
+still needs an engine check, as does private delivery through deployed chat addons.
+
+Inspection shares the reference's existing owner, latest-page, 60-second,
+map/time, exact pool/key/record/name/information identity and current eligibility
+checks. It neither consumes the page nor renews it: `!listEvents` →
+`!inspectEventRef <ref>` → `!nextEventRef <ref>` works within the original lifetime.
+A subsequent successful listing or selection, disconnect, changed definition or
+expiry can make the reference unavailable. Every details row rechecks authority;
+callbacks that replace the page, revoke permission or successfully select/clear
+a pending choice stop the older reply stream, including a select-then-clear
+callback from another admin. Values already copied for a valid reply stream stay
+a snapshot even if fields within the same information table later change.
+
+The command does not alter pending, ready or active encounters, timers, RNG,
+spawns, network messages or saved data. Local mounted `PlayerSay` tests cover
+this workflow, inherited/malformed fields, finite fractional counts, bounded
+Unicode/control diagnostics and reentrant invalidation. They use the actual
+addon under API doubles, not a native Garry's Mod server. On a disposable server,
+list and inspect with two admins, select the inspected reference, and try an
+expired or replaced reference while confirming the existing encounter is intact.
 
 ### Saved spawn data and recovery
 

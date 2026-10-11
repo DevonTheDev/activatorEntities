@@ -29,6 +29,7 @@ local enemyInspections = {}
 local enemyRemovalRequests = {}
 local catalogInspections = {}
 local catalogRequests = {}
+local detailRequests = {}
 local catalogGeneration = 0
 local catalogMaxGeneration = 9007199254740991
 local catalogLifetime = 60
@@ -269,12 +270,9 @@ local function printEventCatalog(ply, text, request)
     end
 end
 
-local function selectEventReference(ply, text, inspection)
-    local token = text:match("^!nextEventRef%s+(%S+)%s*$")
-    if not token then
-        adminLine(ply, "Usage: !nextEventRef <ref> from your latest !listEvents page (one reference, valid for 60 seconds).")
-        return
-    end
+-- Both commands use the same live eligibility/identity admission. Inspection
+-- may copy its fields inside the protected lookup phase, before final checks.
+local function catalogReferenceTarget(ply, token, inspection, readSnapshot)
     local target = inspection and inspection.targets[token]
     local pool = inspection and inspection.pool
     -- Preserve ordinary configured property lookup, including inherited fields.
@@ -291,10 +289,11 @@ local function selectEventReference(ply, text, inspection)
             records[key] = captured
         end
     end
-    local ok, eligible = pcall(function()
-        return target and target.record.name == target.name
+    local ok, eligible, snapshot = pcall(function()
+        local eligible = target and target.record.name == target.name
             and rawequal(target.record.information, target.information)
             and rawequal(selectableEvent(target.name), target.information)
+        return eligible, eligible and readSnapshot and readSnapshot(target)
     end)
     local map, now = catalogAdmission(ply)
     -- Final ownership and raw identity checks happen after all callbacks.
@@ -318,7 +317,17 @@ local function selectEventReference(ply, text, inspection)
             if rawget(pool, key) == nil then accepted = false break end
         end
     end
-    if not accepted then
+    return accepted and target or nil, snapshot
+end
+
+local function selectEventReference(ply, text, inspection)
+    local token = text:match("^!nextEventRef%s+(%S+)%s*$")
+    if not token then
+        adminLine(ply, "Usage: !nextEventRef <ref> from your latest !listEvents page (one reference, valid for 60 seconds).")
+        return
+    end
+    local target = catalogReferenceTarget(ply, token, inspection)
+    if not target then
         if IsValid(ply) and ply:IsPlayer() then
             adminLine(ply, "Next event unchanged: reference unavailable. Use !listEvents and copy one eligible ref from your latest page within 60 seconds.")
         end
@@ -327,7 +336,83 @@ local function selectEventReference(ply, text, inspection)
     -- Consume before feedback can reenter; the ordinary pending-name path stays live.
     catalogInspections[ply] = nil
     pendingSelection = {name = target.name}
+    detailRequests = {}
     adminLine(ply, 'Queued for the next fresh automatic batch: "' .. target.name, '".')
+end
+
+-- Only scalar diagnostics reach chat. Keep complete UTF-8 characters and reserve
+-- explicit shortening/escaping notes rather than implying a complete path/name.
+local function detailLabel(prefix, value)
+    if value == nil then return prefix .. "missing" end
+    if type(value) ~= "string" then return prefix .. "invalid " .. type(value) .. " (expected nonempty string)" end
+    if value == "" then return prefix .. "invalid empty string" end
+    local escaped = value:find("[%c]") ~= nil
+    local display = escaped and value:gsub("[%c\\]", function(char)
+        return string.format("\\x%02X", char:byte())
+    end) or value
+    local suffix = '"' .. (escaped and " [escaped diagnostic]" or "")
+    prefix = prefix .. '"'
+    if #prefix + #display + #suffix > 255 then
+        suffix = suffix .. " [truncated]"
+        local last = 255 - #prefix - #suffix
+        while last > 0 and display:byte(last + 1) >= 128 and display:byte(last + 1) <= 191 do last = last - 1 end
+        display = display:sub(1, last)
+    end
+    return prefix .. display .. suffix
+end
+
+-- Retain int64 spelling where available; fractional doubles may need 17
+-- significant digits to avoid displaying a different requested/floored count.
+local function detailNumber(value)
+    local text = tostring(value)
+    if tonumber(text) == value then return text end
+    return string.format("%.17g", value)
+end
+
+local function detailSnapshot(target)
+    -- Preserve ordinary inherited config properties, but never sample health,
+    -- call engine/model validators, or serialize arbitrary configuration values.
+    local info = target.information
+    local model, class, count = info.activatorModel, info.npcPath, info.maxNPCs
+    local countText = "missing; expected finite number >= 1"
+    if count ~= nil then
+        if type(count) == "number" and count == count and count >= 1 and count < math.huge then
+            countText = detailNumber(count) .. "; finite >= 1; floor = " .. detailNumber(math.floor(count)) .. " creation attempts"
+        else countText = "invalid " .. type(count) .. "; expected finite number >= 1" end
+    end
+    return {detailLabel("Configuration snapshot: ", target.name),
+        detailLabel("activatorModel: ", model), detailLabel("npcPath (enemy class): ", class),
+        "maxNPCs (requested count): " .. countText,
+        "Configured base values only; engine unchecked. Data unchanged; reference not consumed or renewed. !nextEventRef <ref> can still select it."}
+end
+
+local function printEventInspection(ply, text, inspection, request, selection)
+    local function ownsReply()
+        return rawequal(detailRequests[ply], request) and rawequal(pendingSelection, selection)
+            and rawequal(catalogInspections[ply], inspection)
+    end
+    local token = text:match("^!inspectEventRef%s+(%S+)%s*$")
+    if not token then
+        if catalogAdmin(ply) and ownsReply() then
+            adminLine(ply, "Usage: !inspectEventRef <ref> from your latest !listEvents page (one reference, valid for 60 seconds).")
+        end
+        return
+    end
+    local target, replies = catalogReferenceTarget(ply, token, inspection, detailSnapshot)
+    if not ownsReply() then return end
+    if not target then
+        if catalogAdmin(ply) and ownsReply() then
+            adminLine(ply, "Inspection unavailable: reference or configuration could not be checked. Use !listEvents and copy one eligible ref from your latest page within 60 seconds. Data unchanged.")
+        end
+        return
+    end
+    for _, reply in ipairs(replies) do
+        -- A reply callback may replace the page, select an event, revoke admin,
+        -- disconnect, alter definitions or reach expiry. Never emit later rows
+        -- for the old request or restore any state after such a callback.
+        if not catalogReferenceTarget(ply, token, inspection) or not ownsReply() then return end
+        ply:ChatPrint(reply)
+    end
 end
 
 -- Status only inspects current inputs; it neither samples nor refreshes state.
@@ -575,12 +660,15 @@ end
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     local command = text:match("^(!%S+)")
     if command ~= "!nextEvent" and command ~= "!nextEventRef" and command ~= "!clearNextEvent" and command ~= "!eventStatus"
-        and command ~= "!listEvents" and command ~= "!listEventEnemies" and command ~= "!removeEventEnemy" then return end
+        and command ~= "!listEvents" and command ~= "!inspectEventRef" and command ~= "!listEventEnemies" and command ~= "!removeEventEnemy" then return end
     if ply == nil then return end
-    local request, inspection
+    local request, inspection, selection
     if command == "!listEvents" then
         request = {}
         catalogRequests[ply] = request
+    elseif command == "!inspectEventRef" then
+        request, inspection, selection = {}, catalogInspections[ply], pendingSelection
+        detailRequests[ply] = request
     elseif command == "!nextEventRef" then inspection = catalogInspections[ply] end
     if not IsValid(ply) or not ply:IsPlayer() then return end
     if not ply:IsAdmin() then
@@ -593,6 +681,8 @@ hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
         printEventEnemies(ply, text)
     elseif command == "!listEvents" then
         printEventCatalog(ply, text, request)
+    elseif command == "!inspectEventRef" then
+        printEventInspection(ply, text, inspection, request, selection)
     elseif command == "!nextEventRef" then
         selectEventReference(ply, text, inspection)
     elseif command == "!nextEvent" then
@@ -604,11 +694,13 @@ hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
             return ""
         end
         pendingSelection = {name = name}
+        detailRequests = {}
         adminLine(ply, 'Queued for the next fresh automatic batch: "' .. name, '".')
     elseif text ~= command then
         adminLine(ply, "Usage: " .. command)
     elseif command == "!clearNextEvent" then
         pendingSelection = nil
+        detailRequests = {}
         adminLine(ply, "Pending next event cleared.")
     else
         printSelectionStatus(ply)
@@ -643,10 +735,12 @@ hook.Add("PlayerDisconnected", "clearActivatorStatusRequest", function(ply)
     enemyInspections[ply] = nil
     catalogInspections[ply] = nil
     catalogRequests[ply] = nil
+    detailRequests[ply] = nil
 end)
 hook.Add("Initialize", "clearActivatorCatalogReferences", function()
     catalogInspections = {}
     catalogRequests = {}
+    detailRequests = {}
 end)
 
 local function canInteract(ply, ent)
