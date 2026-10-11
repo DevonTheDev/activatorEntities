@@ -1085,6 +1085,14 @@ net.Receive("SendNPCInformation", function(_, ply)
             if IsValid(enemy) and not enemy:IsMarkedForDeletion() then
                 local health = returnEnemyHealth()
                 if not ownsConstruction(enemies, enemy) then return end
+                if type(health) ~= "number" then
+                    stopActivatorEvent()
+                    if IsValid(enemy) then enemy:Remove() end
+                    if IsValid(ply) and ply:IsPlayer() then
+                        ply:ChatPrint("Your encounter start was cancelled because the configured enemy health is not a number. Ask an admin to correct the configuration and restart the server.")
+                    end
+                    return
+                end
                 enemy:SetHealth(health)
                 if not ownsConstruction(enemies, enemy) then return end
                 if IsValid(enemy) and not enemy:IsMarkedForDeletion() then

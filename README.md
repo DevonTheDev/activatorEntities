@@ -38,6 +38,32 @@ the encounter identifier. Correct
 invalid configuration and restart the server before normal use. This guard
 does not validate native NPC classes, models or health, or add a count cap.
 
+Enemy health has a separate, number-type-only check after each eligible NPC's
+existing health lookup and ownership check. The first non-number sample (including
+nil, tables, booleans and numeric strings) deliberately cancels that partial
+encounter. Removal is requested for the remaining tracked enemies and the current
+untracked NPC when still valid; no later candidate is created or sampled. The still-valid requesting player
+receives one private correction: "Your encounter start was cancelled because the
+configured enemy health is not a number. Ask an admin to correct the configuration
+and restart the server." Values are never printed or coerced.
+
+This cancellation has already consumed the interaction, ready actors and selected
+batch. It preserves the queued future choice, clears the old counts and construction
+state without victory, and restarts the normal delay only when automatic spawning
+is enabled. Paused spawning stays paused until resumed; a later batch and fresh
+Use/Start are required. Cleanup or feedback callbacks may start a replacement
+encounter; the old constructor still cleans up its current NPC and then returns
+without changing the replacement's state or timer. A getter that already cancelled
+or replaced the event takes precedence and gets no additional correction.
+
+The [documented SetHealth argument](https://wiki.facepunch.com/gmod/Entity:SetHealth)
+is `number newHealth`. All numeric samples, including zero, negatives, fractions,
+NaN and infinities, still reach the setter unchanged. This check adds no finite,
+positive, integer or range policy and does not catch getter/setter exceptions.
+Local API doubles establish admission and call order, not native health behavior,
+rounding, death, hook timing or chat delivery; verify those on a disposable GMod
+server. No native failure on an invalid health type is claimed.
+
 Admin chat commands:
 
 - `!setActivatorSpawn` / `!setEnemySpawn`: add your current position for this map
@@ -769,6 +795,16 @@ state, consumed replay, fresh-Use retry after a controlled table repair, normal
 completion and the separately queued next encounter. Existing invalid-count and
 finite fractional controls preserve the prior rejection and floor behavior.
 The controlled repair is a test fixture, not support for live Lua hot-reload.
+Health-admission tests exercise the real Start receiver with nil/table samples
+at the first and second eligible NPC, immediate/deferred cleanup, enabled/paused
+schedules, consumed batches, and private correction. Controlled callbacks cover
+getter cancellation/replacement, replacement during both cleanup stages and
+feedback, old-hook replay, earlier tracked kill/removal, getter self-removal,
+invalid requesters and pause/resume during cleanup. Numeric-string/boolean and
+hostile-table cases cannot serialize values. Numeric pass-through controls include
+NaN/infinities; failed Create and Spawn self-removal retain eligible sampling order.
+The deliberately strict mock setter raises a labeled test error on a non-number;
+that is controlled mock behavior, not observed native SetHealth behavior.
 Encounter-selection tests cover administrator permissions, exact and duplicate
 names, pending replacement/clear, partial and failed spawning, selected-batch
 refills, manual actors, deferred removal and current/future ownership. They also
