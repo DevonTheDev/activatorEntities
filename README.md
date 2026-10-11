@@ -592,6 +592,14 @@ lua tests/run.lua
 texlua tests/run.lua
 ```
 
+The standalone source-adapter regressions run separately with
+`texlua tests/translator.lua` (or `lua tests/translator.lua`). They check exact
+lexical output and malformed-comment errors, immediate file edits, and isolated
+include environments. The adapter scans the original source by index without
+caching source or compiled chunks. It preserves the existing limitations:
+`continue`, `&&`, and `||` are not translated, and long-bracket strings are not
+protected from operator/comment translation.
+
 The suite runs the actual addon Lua in isolated environments with Garry's Mod
 API doubles. It covers authorization, stale/repeated requests, client/server
 message ordering, custom named event lifecycles, event completion and cleanup,
