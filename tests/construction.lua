@@ -21,6 +21,13 @@ return function(gmod, test, eq)
         end
         return count
     end
+    local function failureNotices(ply)
+        local count=0
+        for _,text in ipairs(ply.chats) do
+            if text == "No enemies could be spawned for your encounter. Ask an admin to check the server console." then count=count+1 end
+        end
+        return count
+    end
     local function prepare()
         local env=gmod.new(); local ply, actor=env.ready()
         actor:AcceptInput("Use", ply, ply)
@@ -32,6 +39,7 @@ return function(gmod, test, eq)
         eq(#lastStatus(env), 1); eq(lastStatus(env)[1], false)
         eq(env.messageCount("roundFinished"), 0)
         eq(spawnNotices(ply), 0, "retired construction cannot announce a start")
+        eq(failureNotices(ply), 0, "cancellation cannot report an empty start")
         eq(env.timers.activatorSpawner.stopped, false)
         eq(env.stopActivatorEvent(), false)
         eq(#env.errors, 0, "cancellation is not reported as failed creation")
@@ -198,6 +206,7 @@ return function(gmod, test, eq)
             eq(env.messageCount("roundFinished"), action == "kill" and 1 or 0)
             eq(env.messageCount("ActivatorEventStatus"), 1); eq(spawnNotices(ply), 0)
             eq(#env.errors, 0, "admitted NPCs existed, so this is not spawn failure")
+            eq(failureNotices(ply), 0)
             eq(env.timers.activatorSpawner.stopped, false)
         end)
     end
@@ -214,6 +223,7 @@ return function(gmod, test, eq)
         env.receive("SendNPCInformation", ply, "Raid")
         eq(attempts, 5); active(env, "Raid", 2, 3, false)
         eq(ply.chats[#ply.chats], "3 enemies have been spawned. Eliminate them.")
+        eq(failureNotices(ply), 0)
     end)
 
     test("native-style deferred earlier removal retains interruption and initial count", function()
@@ -257,6 +267,7 @@ return function(gmod, test, eq)
                 eq(attempts, 5); eq(#survivors, 3); active(env, "Raid", 3, 3, false)
                 eq(spawnNotices(ply), 1)
                 eq(ply.chats[#ply.chats], "3 enemies have been spawned. Eliminate them.")
+                eq(failureNotices(ply), 0)
                 if boundary == "Spawn" then eq(rejected.health, nil, "deleted candidate skips health setup") end
                 env.flushRemovals(); active(env, "Raid", 3, 3, false)
                 eq(env.messageCount("ActivatorEventStatus"), 1, "excluded removal cannot publish progress")
@@ -270,6 +281,7 @@ return function(gmod, test, eq)
         for _, paused in ipairs({false, true}) do
             test("all candidates delete during " .. boundary .. " recover after failed start, paused=" .. tostring(paused), function()
                 local env, ply=prepare(); env.deferRemoval=true; ply.admin=true
+                local observer=env.entity("player")
                 if paused then env.fire("PlayerSay", ply, "!pauseActivatorSpawns") end
                 local create=env.ents.Create; local attempts=0
                 env.ents.Create=function(class)
@@ -286,6 +298,7 @@ return function(gmod, test, eq)
                 eq(env.messageCount("roundFinished"), 0); eq(spawnNotices(ply), 0)
                 eq(env.timers.activatorSpawner.stopped, paused)
                 eq(#env.errors, 1); eq(env.errors[1], "ERROR - No event enemies could be spawned\n")
+                eq(failureNotices(ply), 1); eq(#observer.chats, 0)
                 env.flushRemovals()
                 eq(#env.ents.FindByName("devonsSpawnedEntity"), 0)
                 eq(env.messageCount("ActivatorEventStatus"), 1)
@@ -327,6 +340,7 @@ return function(gmod, test, eq)
             end
             active(env, "Replacement", 2, 2, false)
             eq(spawnNotices(ply), 1, "only the replacement announces a start")
+            eq(failureNotices(ply), 0, "retired constructor cannot report stale failure")
             for _, enemy in ipairs(nextEnemies) do env.fire("OnNPCKilled", enemy, nextPlayer) end
             eq(env.messageCount("roundFinished"), 1); eq(env.totalEnemies, 0)
         end)
@@ -348,6 +362,7 @@ return function(gmod, test, eq)
         env.receive("SendNPCInformation", ply, "Raid")
         eq(attempts, 1); active(env, "Replacement", 2, 2, false)
         eq(#env.ents.FindByName("devonsSpawnedEntity"), 2); eq(spawnNotices(ply), 1)
+        eq(failureNotices(ply), 0)
     end)
 
     for _, deferred in ipairs({false, true}) do

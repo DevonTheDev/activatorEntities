@@ -5,6 +5,7 @@ return function(gmod, test, eq)
     local canonical,backup="devonsspawninfo.json","devonsspawninfo.backup.json"
     local expired = "This interaction expired. Use the activator again."
     local missing = "No enemy spawn position is available. Ask an admin to fix it, then use the activator again."
+    local empty = "No enemies could be spawned for your encounter. Ask an admin to check the server console."
     local started = "2 enemies have been spawned. Eliminate them."
 
     local function storage(env)
@@ -277,28 +278,154 @@ return function(gmod, test, eq)
         eq(server.totalEnemies,5); eq(#ply.chats,1); eq(#observer.chats,1)
         eq(ply.chats[1],"5 enemies have been spawned. Eliminate them.")
     end)
-    for _,reason in ipairs({"expired", "missing positions"}) do
+    for _,reason in ipairs({"expired", "missing positions", "empty start"}) do
         test("Start guidance for " .. reason .. " contains no configured name or position", function()
             local server,client=gmod.new(),gmod.new(true)
             local name=string.rep("火",200)
             server.NPCEdits[1].name=name; server.determineRandomEvent=function() return name end
             local ply,ent=server.ready(); local observer=server.entity("player")
             local frame,button=open(server,client,ply,ent)
-            if reason == "expired" then server.now=61 else server.SpawnPositions[1].enemySpawnPositions={} end
+            if reason == "expired" then server.now=61
+            elseif reason == "missing positions" then server.SpawnPositions[1].enemySpawnPositions={}
+            else server.failClass="npc_stalker" end
             click(server,client,ply,frame,button)
             eq(#ply.chats,1); eq(#observer.chats,0)
-            eq(ply.chats[1],reason == "expired" and expired or missing)
+            eq(ply.chats[1],reason == "expired" and expired or (reason == "missing positions" and missing or empty))
             assert(#ply.chats[1] < 200)
         end)
     end
-    test("zero successful enemy creation keeps its existing silent post-activation cleanup", function()
-        local server,client=gmod.new(),gmod.new(true)
-        local ply,ent=server.ready(); local observer=server.entity("player")
-        local frame,button=open(server,client,ply,ent)
-        server.failClass="npc_stalker"; click(server,client,ply,frame,button)
-        eq(server.totalEnemies,0); eq(#server.ents.FindByClass("activatorent"),0)
-        eq(#ply.chats,0); eq(#observer.chats,0); eq(#server.errors,1)
-        eq(server.messageCount("ActivatorEventStatus"),1); eq(server.messageCount("roundFinished"),0)
-        eq(server.timers.activatorSpawner.stopped,false)
-    end)
+    for _,paused in ipairs({false,true}) do
+        test("actual empty Start privately explains failure and preserves future choice, paused=" .. tostring(paused), function()
+            local server,client,ply,ent,admin,observer,ioState=selected()
+            if paused then server.fire("PlayerSay",admin,"!pauseActivatorSpawns") end
+            local frame,button=open(server,client,ply,ent)
+            local before=snapshot(server,ioState)
+            local create=server.ents.Create; local attempts=0
+            server.ents.Create=function(class)
+                if class == "npc_combine_s" then attempts=attempts+1; return {valid=false} end
+                return create(class)
+            end
+            local timerStarts,timerStops=0,0
+            local start,stop=server.timer.Start,server.timer.Stop
+            server.timer.Start=function(name) timerStarts=timerStarts+1; start(name) end
+            server.timer.Stop=function(name) timerStops=timerStops+1; stop(name) end
+            local request=click(server,client,ply,frame,button)
+            eq(attempts,2,"failure does not retry or substitute another definition")
+            eq(server.totalEnemies,0); eq(server.activatorCount,0)
+            eq(#server.ents.FindByClass("activatorent"),0)
+            eq(#server.ents.FindByName("devonsSpawnedEntity"),0)
+            eq(#ply.chats,1); eq(ply.chats[1],empty); assert(#empty < 200)
+            eq(#admin.chats,before.chats[admin]); eq(#observer.chats,before.chats[observer])
+            eq(#server.errors,1); eq(server.errors[1],"ERROR - No event enemies could be spawned\n")
+            eq(#server.messages,before.messages+1,"only existing inactive progress is sent")
+            local progress=server.messages[#server.messages]
+            eq(progress.name,"ActivatorEventStatus"); eq(#progress.values,1); eq(progress.values[1],false)
+            client.deliver(progress)
+            eq(server.messageCount("roundFinished"),0)
+            eq(server.timers.activatorSpawner,before.timer)
+            eq(before.timer.delay,before.delay); eq(before.timer.repetitions,before.repetitions)
+            eq(before.timer.callback,before.callbacks); eq(before.timer.stopped,paused)
+            eq(timerStops,1); eq(timerStarts,paused and 0 or 1)
+            eq(server.SpawnPositions,before.positions); sameData(server.SpawnPositions,before.positionData)
+            eq(ioState.reads,before.reads); eq(ioState.writes,before.writes)
+            eq(ioState.exists,before.exists); eq(ioState.encodes,before.encodes); eq(ioState.decodes,before.decodes)
+            sameData(ioState.files,before.files)
+            local afterStatus=status(server,admin)
+            assert(afterStatus:find("Selected ready batch: none",1,true))
+            assert(afterStatus:find('Pending next batch: "Raid"',1,true))
+            local settled=snapshot(server,ioState)
+            server.deliver(request,ply); unchanged(server,settled,ioState,nil,nil)
+            eq(timerStops,1); eq(timerStarts,paused and 0 or 1)
+
+            server.ents.Create=create
+            if paused then server.fire("PlayerSay",admin,"!resumeActivatorSpawns") end
+            server.fireTimer("activatorSpawner")
+            local nextActor=assert(server.ents.FindByClass("activatorent")[1])
+            eq(nextActor.EventIdentifier,"Raid","queued choice owns the next fresh batch")
+            ply:SetPos(nextActor:GetPos()); frame,button=open(server,client,ply,nextActor)
+            click(server,client,ply,frame,button)
+            eq(server.totalEnemies,5); eq(#ply.chats,2)
+            eq(ply.chats[2],"5 enemies have been spawned. Eliminate them.")
+            local recovered=snapshot(server,ioState)
+            server.deliver(request,ply); unchanged(server,recovered,ioState,nil,nil)
+        end)
+    end
+
+    for _,boundary in ipairs({"creation","diagnostic"}) do
+        for _,kind in ipairs({"invalid","non-player"}) do
+            test("empty Start skips a requester made " .. kind .. " during " .. boundary, function()
+                local server,client=gmod.new(),gmod.new(true)
+                local ply,ent=server.ready(); local observer=server.entity("player")
+                local frame,button=open(server,client,ply,ent)
+                local function invalidate()
+                    if kind == "invalid" then
+                        ply.valid=false
+                        ply.IsPlayer=function() error("invalid requester must not be queried") end
+                    else ply.class="npc_zombie" end
+                end
+                if boundary == "creation" then
+                    local create=server.ents.Create
+                    server.ents.Create=function(class)
+                        if class == "npc_stalker" then invalidate(); return {valid=false} end
+                        return create(class)
+                    end
+                else
+                    server.failClass="npc_stalker"
+                    local diagnostic=server.ErrorNoHalt
+                    server.ErrorNoHalt=function(text) diagnostic(text); invalidate() end
+                end
+                click(server,client,ply,frame,button)
+                eq(#ply.chats,0); eq(#observer.chats,0,"notice cannot move to another player")
+                eq(server.totalEnemies,0); eq(#server.errors,1)
+                eq(server.messageCount("ActivatorEventStatus"),1); eq(server.messageCount("roundFinished"),0)
+                eq(server.timers.activatorSpawner.stopped,false)
+            end)
+        end
+    end
+
+    for _,paused in ipairs({false,true}) do
+        test("empty Start notice callback leaves its replacement untouched, paused=" .. tostring(paused), function()
+            local server,client,ply,ent,admin,observer,ioState=selected()
+            if paused then server.fire("PlayerSay",admin,"!pauseActivatorSpawns") end
+            local frame,button=open(server,client,ply,ent)
+            server.failClass="npc_combine_s"
+            local chat=ply.ChatPrint; local callbacks=0; local replacementPlayer,settled
+            function ply:ChatPrint(text)
+                chat(self,text)
+                if text ~= empty then return end
+                callbacks=callbacks+1
+                eq(server.totalEnemies,0); eq(#server.ents.FindByClass("activatorent"),0)
+                eq(server.messages[#server.messages].values[1],false)
+                eq(#server.errors,1,"diagnostic and all cleanup precede the notice")
+                eq(server.timers.activatorSpawner.stopped,paused)
+                local actor=server.entity("activatorent"); actor.EventIdentifier="Raid"; actor:Spawn()
+                replacementPlayer=server.entity("player"); replacementPlayer:SetPos(actor:GetPos())
+                local replacementFrame,replacementStart=open(server,client,replacementPlayer,actor)
+                -- Keep the outer simulated decoder frame while deliberately
+                -- delivering a second request inside this synchronous callback.
+                local incoming,incomingFields=server.incoming,server.incomingFields
+                click(server,client,replacementPlayer,replacementFrame,replacementStart)
+                server.incoming,server.incomingFields=incoming,incomingFields
+                eq(server.totalEnemies,5)
+                settled=snapshot(server,ioState)
+            end
+            local request=click(server,client,ply,frame,button)
+            eq(callbacks,1); assert(settled,"notice must run its replacement callback")
+            unchanged(server,settled,ioState,nil,nil)
+            server.deliver(request,ply); unchanged(server,settled,ioState,nil,nil)
+            local progress=server.messages[#server.messages]
+            eq(progress.name,"ActivatorEventStatus"); eq(progress.values[1],true)
+            eq(progress.values[2],"Raid"); eq(progress.values[3],5); eq(progress.values[4],5)
+            eq(progress.values[5],false); eq(server.timers.activatorSpawner.stopped,true)
+            eq(#ply.chats,2); eq(ply.chats[1],empty)
+            eq(#observer.chats,1); eq(observer.chats[1],"5 enemies have been spawned. Eliminate them.")
+            eq(#replacementPlayer.chats,1)
+            assert(status(server,admin):find('Pending next batch: "Raid"',1,true))
+            for _,enemy in ipairs(server.ents.FindByName("devonsSpawnedEntity")) do
+                server.fire("OnNPCKilled",enemy,replacementPlayer)
+            end
+            eq(server.totalEnemies,0); eq(server.messageCount("roundFinished"),1)
+            eq(server.timers.activatorSpawner.stopped,paused)
+        end)
+    end
 end

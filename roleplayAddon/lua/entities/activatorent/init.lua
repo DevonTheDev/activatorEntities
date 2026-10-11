@@ -860,6 +860,9 @@ net.Receive("SendNPCInformation", function(_, ply)
     if initialEnemies == 0 then
         finishEvent(false)
         ErrorNoHalt("ERROR - No event enemies could be spawned\n")
+        if IsValid(ply) and ply:IsPlayer() then
+            ply:ChatPrint("No enemies could be spawned for your encounter. Ask an admin to check the server console.")
+        end
         return
     end
     if totalEnemies == 0 then finishEvent(not eventInterrupted) return end

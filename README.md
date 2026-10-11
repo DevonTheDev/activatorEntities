@@ -476,8 +476,22 @@ An admin repair does not start it automatically; a fresh Use and Start are
 required. Unissued, invalid, mismatched, cancelled and replayed requests stay
 silent, including mismatched or invalid requests after expiry. Guidance uses
 short constant `ChatPrint` text without configured names or positions; it adds
-no addon network message or client behavior. Failure to create any enemies
-after activation retains its existing cleanup path.
+no addon network message or client behavior.
+
+If activation admits no enemies, the server keeps its existing cleanup: retire
+ready actors and the selected batch, preserve the queued future choice, publish
+inactive progress, and restart the ordinary delay unless paused. After the
+console diagnostic, the still-valid requesting player now receives one private
+message: "No enemies could be spawned for your encounter. Ask an admin to check
+the server console." This includes candidates that remove themselves before
+admission. Replays remain silent; partial success and enemies killed during
+setup do not produce this failure notice. Cancellation or replacement during
+construction also remains silent. A later ordinary spawn and fresh Use/Start
+are needed to try again; no automatic retry is added.
+
+Local doubles check the notice, cleanup ordering and callback replacement.
+Native NPC creation, self-removal timing and private chat delivery still need a
+disposable Garry's Mod server check, with automatic spawning enabled and paused.
 
 Runtime spawning requires one unambiguous record for the requested map and a
 complete target list of finite Vectors at positive integer keys. Malformed or
@@ -584,7 +598,11 @@ valid sparse sampling order, and callback invalidation of a partial batch.
 Start-feedback tests transfer the actual menu callback's request to the server
 receiver. They check private expiry/missing-position guidance, the exact 60/61
 second boundary, consumed replays, silent invalid requests, retained actors and
-selection, and fresh-use recovery after the actual admin repair callback.
+selection, and fresh-use recovery after the actual admin repair callback. They
+also cover private empty-start guidance with enabled/paused spawning, silent
+replays, retained future choice, invalidated requesters, and replacement started
+inside the notice callback. Construction controls distinguish zero admissions
+from partial success, completed admissions and cancelled/replaced construction.
 Dialogue-lifecycle checks transfer real server packets between separate client
 entity copies, exercise actor-removal and client update callbacks, and preserve
 valid menu replacement, ordinary Start/Cancel and completion/progress panels.
