@@ -52,6 +52,7 @@ Admin chat commands:
 - `!nextEventRef <ref>`: queue an eligible entry from your latest catalog page
 - `!inspectEventRef <ref>`: privately inspect its configured model, enemy class and requested count
 - `!listEvents [page]`: browse all configured names and their selection eligibility
+- `!findEvents <page> <text>`: privately search configured names by a literal substring
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
 - `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
@@ -389,9 +390,59 @@ have two admins list independently, select a long or escaped name by its ref,
 try a stale/refreshed/expired ref, and confirm a queued choice waits for the next
 ordinary fresh batch while ready actors and active encounters stay unchanged.
 
+### Search configured encounter names
+
+Use `!findEvents 1 raid` to search original configured names for `raid`, then
+`!findEvents 2 raid` for the next page. This admin-only command folds ASCII
+letters A-Z only. It treats punctuation, quotes, backslashes and Lua pattern
+characters literally; it does not search information fields, apply Unicode
+case folding, or search the escaped display representation. Ordinary non-ASCII
+query bytes are preserved. A name containing a control byte can still be found
+by another substring and selected or inspected by its exact reference.
+
+Both arguments are required. Use exactly one ASCII space after `!findEvents`
+and after the page. The page is a positive decimal integer of one to six digits;
+leading zeros are allowed (`000001` means page 1), but an all-zero page is not.
+The text is 1-128 bytes, with no leading/trailing ASCII space, ASCII control
+bytes, UTF-8 C1 controls, or U+2028/U+2029 line separators. Internal spaces are
+literal. The complete command is limited to 147 bytes. Invalid input gives
+private usage help; it is not trimmed, repaired, or interpreted as another
+command. The original `!listEvents [page]` grammar and replies are unchanged.
+
+Each search reports the matching-name count and page range. Counts include
+unavailable matching groups: exact duplicate names remain duplicates across the
+whole pool, and missing/non-table information stays visible. Search never makes
+an unavailable group eligible. Entries retain the complete catalog's sorted
+display IDs, so gaps are expected. Long names use the same complete numbered
+continuations and eight-body-line, 240-byte-per-line budget as the full catalog.
+Pages count body lines, including continuations and diagnostic summaries.
+
+Records without string names cannot match. Their counts remain in an explicitly
+**unfiltered pool diagnostics** summary, outside the matching-name count and
+without references. Zero matches is a successful one-page result with an
+explicit no-match line; a malformed/missing pool is also described. Search does
+not infer that a zero-match result means the configuration is valid.
+
+Only eligible entries on the displayed page receive references. List and search
+share the same latest-page ownership, one-selection-per-page rule, 60-second
+lifetime, and live map/time/configuration identity checks. A successful search,
+including zero matches, replaces older list/search references; a failed request
+keeps the previous successful page. `!inspectEventRef <ref>` can inspect a search
+result without consuming or renewing it, and `!nextEventRef <ref>` queues its
+exact original name. Searching alone does not select, spawn, remove, save, draw
+randomness, or change timers, interactions, ready actors or active encounters.
+
+Local real-handler tests cover literal matching, strict input limits, complete
+pool eligibility, private pagination, escaped/Unicode continuation names,
+list/search replacement, reentrant callbacks and preserved lifecycle state.
+They use Lua 5.3 with GMod doubles. Native Garry's Mod remains unverified: on a
+disposable server, have two admins search independently, inspect and select a
+long or escaped name by reference, switch between list/search pages, and try
+expired references while checking private chat delivery and unchanged actors.
+
 ### Inspect one configured encounter
 
-Copy an eligible reference from your latest `!listEvents` page into
+Copy an eligible reference from your latest `!listEvents` or `!findEvents` page into
 `!inspectEventRef r0000000000000012-3`. This exact admin command accepts one
 reference, with optional surrounding whitespace. It replies privately with five
 short rows: a **configuration snapshot** of the event name, `activatorModel`,
