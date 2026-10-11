@@ -196,6 +196,38 @@ end
 local spawnInspections = {}
 local spawnMarkerOperations = {}
 util.AddNetworkString("ActivatorSpawnMarker")
+-- Both snapshot kinds occupy one client slot and share only operation/transport.
+ActivatorSnapshotMarker = {}
+function ActivatorSnapshotMarker.Claim(sender)
+    local operation = {}
+    spawnMarkerOperations[sender] = operation
+    return operation
+end
+function ActivatorSnapshotMarker.Current(sender, operation)
+    return rawequal(spawnMarkerOperations[sender], operation)
+end
+function ActivatorSnapshotMarker.Cancel(sender)
+    spawnMarkerOperations[sender] = nil
+end
+function ActivatorSnapshotMarker.Retire(sender, operation)
+    if not ActivatorSnapshotMarker.Current(sender, operation) then return false end
+    spawnMarkerOperations[sender] = nil
+    return true
+end
+function ActivatorSnapshotMarker.Send(sender, mapName, kind, token, x, y, z, expires)
+    net.Start("ActivatorSpawnMarker")
+    net.WriteBool(mapName ~= nil)
+    if mapName ~= nil then
+        net.WriteString(mapName)
+        net.WriteString(kind)
+        net.WriteString(token)
+        net.WriteDouble(x)
+        net.WriteDouble(y)
+        net.WriteDouble(z)
+        net.WriteDouble(expires)
+    end
+    net.Send(sender)
+end
 local spawnKinds = {
     enemy = {field = "enemySpawnPositions", remove = "!removeEnemySpawn", move = "!moveEnemySpawn"},
     activator = {field = "activatorSpawnPositions", remove = "!removeActivatorSpawn", move = "!moveActivatorSpawn"},
@@ -370,18 +402,15 @@ end
 -- Engine reads can reenter PlayerSay; a newer mark, clear or list wins.
 local function sendSpawnMarker(sender, text, clear)
     if sender == nil then return end
-    local operation, expected = {}, spawnInspections[sender]
-    spawnMarkerOperations[sender] = operation
-    local function current() return rawequal(spawnMarkerOperations[sender], operation) end
+    local operation, expected = ActivatorSnapshotMarker.Claim(sender), spawnInspections[sender]
+    local function current() return ActivatorSnapshotMarker.Current(sender, operation) end
     local ok, message = pcall(function()
         if not IsValid(sender) or not sender:IsPlayer() then return end
         if not sender:IsAdmin() then return "Only admins can mark spawn snapshots." end
         if clear then
             if text ~= "!clearSpawnMarker" then return "Usage: !clearSpawnMarker." end
             if not current() then return end
-            net.Start("ActivatorSpawnMarker")
-            net.WriteBool(false)
-            net.Send(sender)
+            ActivatorSnapshotMarker.Send(sender)
             return "Spawn snapshot marker cleared."
         end
         if not sender:Alive() then return "Spawn snapshot unchanged: you must be alive." end
@@ -406,21 +435,11 @@ local function sendSpawnMarker(sender, text, clear)
         local x, y, z = position.x, position.y, position.z
         if not finiteNumber(x) or not finiteNumber(y) or not finiteNumber(z)
             or not current() or not rawequal(spawnInspections[sender], expected) then return end
-        net.Start("ActivatorSpawnMarker")
-        net.WriteBool(true)
-        net.WriteString(mapName)
-        net.WriteString(kind)
-        net.WriteString(token)
-        net.WriteDouble(x)
-        net.WriteDouble(y)
-        net.WriteDouble(z)
-        net.WriteDouble(now + 15)
-        net.Send(sender)
+        ActivatorSnapshotMarker.Send(sender, mapName, kind, token, x, y, z, now + 15)
         return "15-second " .. kind .. " stored-base snapshot sent; !clearSpawnMarker to clear."
     end)
     -- Never retire a nested request's ownership, or print success before Send.
-    if current() then
-        spawnMarkerOperations[sender] = nil
+    if ActivatorSnapshotMarker.Retire(sender, operation) then
         if ok and message then sender:ChatPrint(message) end
     end
 end
@@ -457,6 +476,8 @@ end
 hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if type(text) ~= "string" then return end
     local name = text:match("^(!%S+)")
+    -- Encounter commands claim their own capture/operation before any guards.
+    if name == "!markEventEnemy" or name == "!clearEventEnemyMarker" or name == "!listEventEnemies" then return end
     if name == "!markSpawn" or name == "!clearSpawnMarker" then
         sendSpawnMarker(sender, text, name == "!clearSpawnMarker")
         return ""

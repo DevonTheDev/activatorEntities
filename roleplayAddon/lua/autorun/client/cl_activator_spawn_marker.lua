@@ -1,4 +1,4 @@
--- A private, temporary snapshot of a configured base, never a live spawn target.
+-- A private, temporary position snapshot, never a live target or tracking request.
 local marker
 local lifetime, clockTolerance = 15, 1
 local font = "DermaDefault"
@@ -25,7 +25,7 @@ end
 local function decode(bits)
     -- net.Receive gives payload bits, excluding the message-name header. Bound
     -- before reads: truncated engine reads can return zero instead of throwing.
-    if not finite(bits) or bits % 1 ~= 0 or bits < 1 or bits > 1889 then return end
+    if not finite(bits) or bits % 8 ~= 1 or bits < 1 or bits > 1905 then return end
     local show = net.ReadBool()
     if show == false then
         if bits == 1 then return false end
@@ -33,7 +33,7 @@ local function decode(bits)
     end
     if show ~= true or bits < 337 then return end
     local map, kind, key = net.ReadString(), net.ReadString(), net.ReadString()
-    if not boundedString(map, 128) or (kind ~= "enemy" and kind ~= "activator")
+    if not boundedString(map, 128) or (kind ~= "enemy" and kind ~= "activator" and kind ~= "event_enemy")
         or not boundedString(key, 64) or key:find("%s") then return end
     local number = tonumber(key)
     if not finite(number) or number <= 0 or number % 1 ~= 0 then return end
@@ -48,7 +48,7 @@ local function decode(bits)
     local realExpires = realNow + math.min(lifetime, remaining)
     if not finite(realExpires) or realExpires <= realNow then return end
     -- Vector can have a narrower native representation than a network double.
-    -- Reject a lossy or unusable copy; never alter the configured coordinates.
+    -- Reject a lossy or unusable copy; never alter the received coordinates.
     local position = Vector(x, y, z)
     if not isvector(position) or not finite(position.x) or not finite(position.y) or not finite(position.z)
         or position.x ~= x or position.y ~= y or position.z ~= z then return end
@@ -139,8 +139,13 @@ hook.Add("HUDPaint", "ActivatorSpawnMarkerHUD", function()
     end
     local available = math.max(0, width - 2 * left)
     local label = (current.kind == "enemy" and "Enemy" or "Activator") .. " spawn key " .. current.key .. " - snapshot"
+    local help = "15-second snapshot; turn toward the point; !clearSpawnMarker"
+    if current.kind == "event_enemy" then
+        label = "Encounter enemy index " .. current.key .. " - position snapshot"
+        help = "15-second snapshot; enemy may move; !clearEventEnemyMarker"
+    end
     local lineHeight = statusLine(label, left, top, available, height)
     if lineHeight then
-        statusLine("15-second snapshot; turn toward the point; !clearSpawnMarker", left, top + lineHeight + 2, available, height)
+        statusLine(help, left, top + lineHeight + 2, available, height)
     end
 end)

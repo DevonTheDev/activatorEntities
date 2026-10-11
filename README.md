@@ -56,6 +56,8 @@ Admin chat commands:
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
 - `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
+- `!markEventEnemy <index>`: privately mark one freshly inspected remaining enemy's current position for 15 seconds
+- `!clearEventEnemyMarker`: privately clear the shared temporary snapshot slot
 
 Accepted spawn additions, removals and moves attempt a verified save immediately
 to the DATA directory; clean shutdown also checks the latest state. Positions load on initialization.
@@ -305,6 +307,51 @@ enemy ID is created. A successful page keeps a private, server-local selection
 for that admin until their next successful page, an accepted removal request,
 disconnection or encounter retirement. Listing has no gameplay, timer, randomness,
 saved-data or network-publication side effects.
+
+### Mark one inspected encounter enemy
+
+After a successful `!listEventEnemies [page]` outside encounter construction, a
+living admin can use `!markEventEnemy <index>` with one exact index shown on that
+page. The server captures that same owned enemy's current position **at mark
+time**, including fractional coordinates. It sends only that admin a 15-second
+**encounter-enemy position snapshot**. Movement after listing is reflected in the
+new mark; movement after marking does not move the point. This is distinct from
+the configured stored bases shown by `!markSpawn enemy <key>`.
+
+Another admin must inspect independently. Only unique, indexed enemies on the
+actual selected page can be marked; duplicate indices, including duplicates on
+other pages, grant no target. Changed indices, killed/removed/deleting enemies,
+pending cleanup, a retired/replaced encounter and stale pages require a fresh
+inspection. The server retains the selected object and never finds a replacement
+by its index. Any newer `!listEventEnemies` attempt, even a failed one, invalidates
+marker permission; existing removal permission still follows the successful-page
+rules above. A page captured while construction is in progress cannot authorize
+a later mark: list again once construction finishes. Stable interrupted encounters
+and paused automatic spawning still allow eligible remaining enemies to be marked.
+
+Repeated marking and clearing do not consume or refresh enemy-removal permission.
+An accepted cleanup consumes that page as before. A successful enemy mark replaces
+the same single HUD slot used by stored-base marks. Invalid or stale requests keep
+the previously displayed snapshot. Either `!clearEventEnemyMarker` or
+`!clearSpawnMarker` privately clears that shared slot, including when already
+clear; clearing requires an admin but does not require them to be alive.
+
+The label identifies an encounter enemy's position snapshot and warns that the
+enemy may move. After acceptance, movement, death, removal or encounter retirement
+leave only the historical point until expiry or clear; the point does not prove
+that the enemy or encounter is still active. It uses the same projection, viewport,
+clock, local-player and reload rules as stored-base markers above. The cross may
+show through walls, and fixed status text may remain when projection is unavailable
+or the point is outside view. Marking does not navigate, teleport, delete, damage,
+track or change the encounter, queued event, saved configuration or interaction.
+
+Update both server and client addon files and reconnect. New clients accept the
+unchanged legacy stored-base and clear packets. A client with only stored-base
+marker support rejects the new `event_enemy` subtype and keeps its prior valid
+marker; there is no misleading fallback to a stored-base label. The new clear
+alias still uses the legacy one-bit clear packet. An old server can expose an
+unknown command as public chat, so mixed versions cannot guarantee private command
+handling or display.
 
 ### Remove one inspected encounter enemy
 
@@ -871,3 +918,23 @@ An in-game smoke test is still required for projected alignment/FOV/third-person
 views, native Vector and double network round-trips, font readability/clipping,
 through-wall expectations, hidden HUD behavior, pause timing and two-client
 privacy. No native rendering pass is claimed.
+
+### Encounter-enemy snapshot verification
+
+Focused tests transfer actual server output into the real client receiver in
+isolated Lua realms. They check selected-object authority, mark-time coordinates,
+private destinations, shared-slot replacement, historical lifetime and unchanged
+encounter, queued-event, interaction, configuration and progress behavior. Finite
+pre-feature fixtures compare exact existing command strings and legacy typed
+packet payloads without reading checkout history at test time. These checks do
+not encode native engine packets or establish real ChatPrint privacy, entity
+handle lifetime/reuse, network delivery, Vector/projection behavior or HUD pixels.
+
+On a disposable multiplayer server, use two admins and a moving remaining enemy.
+List an exact page, move the enemy, mark its shown index and confirm that only the
+requester receives the mark-time point. Move, kill or remove that enemy and confirm
+the point stays fixed; reject a stale request after encounter replacement. Replace
+the slot in both directions with a stored-base mark, exercise both clear commands,
+wait for expiry and check a narrow viewport. Confirm ordinary victory, interrupted
+cleanup, the queued next event, pause/resume and Start/Cancel still work. A native
+Garry's Mod run is required before claiming those multiplayer or rendering results.

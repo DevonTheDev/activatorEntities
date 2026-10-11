@@ -27,6 +27,8 @@ local initialEnemies = 0
 local statusRequestAfter = {}
 local enemyInspections = {}
 local enemyRemovalRequests = {}
+local enemyMarkerCaptures = {}
+local enemyMarkerGrants = {}
 local catalogInspections = {}
 local catalogRequests = {}
 local detailRequests = {}
@@ -587,7 +589,13 @@ local function enemyLocationIndex(enemy)
     return index, string.format("%.17g", index)
 end
 
-local function printEventEnemies(ply, text)
+local function enemyMarkerMap()
+    local ok, mapName = pcall(game.GetMap)
+    if ok and type(mapName) == "string" and #mapName > 0 and #mapName <= 128
+        and not mapName:find("%c") then return mapName end
+end
+
+local function printEventEnemies(ply, text, capture)
     local argument = text:match("^!listEventEnemies%s*(.-)%s*$")
     local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
     local usage = "Usage: !listEventEnemies [page]; page must be a positive integer"
@@ -598,6 +606,7 @@ local function printEventEnemies(ply, text)
     if not eventActive then ply:ChatPrint("No active encounter.") return end
 
     local owners, copied = activeEnemies, {}
+    local markerMap = enemyMarkerMap()
     local name, remaining, initial = activeEventName, totalEnemies, initialEnemies
     for enemy in pairs(owners) do copied[#copied + 1] = enemy end
     local rows, indexCounts, omitted = {}, {}, 0
@@ -635,8 +644,81 @@ local function printEventEnemies(ply, text)
     replies[#replies + 1] = "Temporary entity indices can be reused. !listEventEnemies [page] (1-" .. pages .. "); fresh snapshot."
     replies[#replies + 1] = "!removeEventEnemy <index> requests one listed enemy's removal; interrupts the encounter (no victory). List again after each request."
     -- Install before replies: nested inspection or retirement must win.
-    enemyInspections[ply] = {owners = owners, targets = targets}
+    local inspection = {owners = owners, targets = targets}
+    enemyInspections[ply] = inspection
+    -- A marker grant follows this exact legacy page, never a reconstructed index.
+    -- Older getter captures may still install their legacy page; fail closed if
+    -- that page and a newer marker grant disagree, without changing cleanup.
+    local currentMap = enemyMarkerMap()
+    if capture and rawequal(enemyMarkerCaptures[ply], capture) and capture.stable
+        and rawequal(capture.owners, owners) and eventActive and not constructingEnemies
+        and rawequal(activeEnemies, owners) and rawequal(enemyInspections[ply], inspection)
+        and markerMap and currentMap == markerMap then
+        enemyMarkerGrants[ply] = {capture = capture, inspection = inspection, map = markerMap}
+    end
     for _, reply in ipairs(replies) do ply:ChatPrint(reply) end
+end
+
+-- Captured object and page identity are checked after callback-capable reads.
+-- Sending a detached point grants no tracking or cleanup authority.
+local function sendEventEnemyMarker(ply, text, clear)
+    if ply == nil then return end
+    local operation = ActivatorSnapshotMarker.Claim(ply)
+    local grant = enemyMarkerGrants[ply]
+    local capture = grant and grant.capture
+    local inspection = grant and grant.inspection
+    local owners = inspection and inspection.owners
+    local token = text:match("^!markEventEnemy%s+(%S+)%s*$")
+    local enemy = inspection and token and inspection.targets[token]
+    local function current() return ActivatorSnapshotMarker.Current(ply, operation) end
+    local function owned()
+        return current() and grant and rawequal(enemyMarkerGrants[ply], grant)
+            and rawequal(enemyMarkerCaptures[ply], capture)
+            and rawequal(enemyInspections[ply], inspection) and rawequal(activeEnemies, owners)
+            and eventActive and not constructingEnemies and enemy and owners[enemy]
+            and rawequal(inspection.targets[token], enemy) and not enemyRemovalRequests[enemy]
+    end
+    local function permitted(alive)
+        return IsValid(ply) and ply:IsPlayer() and ply:IsAdmin() and (not alive or ply:Alive())
+    end
+    local function targetCurrent()
+        if not owned() or not IsValid(enemy) or enemy:IsMarkedForDeletion() then return false end
+        local _, index = enemyLocationIndex(enemy)
+        if index ~= token or not IsValid(enemy) or enemy:IsMarkedForDeletion() or not owned() then return false end
+        local _, finalIndex = enemyLocationIndex(enemy)
+        return finalIndex == token and owned()
+    end
+    local refused = "Enemy snapshot unchanged: inspect again with !listEventEnemies [page] and copy one unique current index."
+    local ok, message = pcall(function()
+        if not IsValid(ply) or not ply:IsPlayer() then return end
+        if not ply:IsAdmin() then return "Only admins can mark encounter enemy snapshots." end
+        if clear then
+            if text ~= "!clearEventEnemyMarker" then return "Usage: !clearEventEnemyMarker." end
+            if not permitted(false) or not current() then return end
+            ActivatorSnapshotMarker.Send(ply)
+            return "Enemy snapshot marker cleared."
+        end
+        if not ply:Alive() then return "Enemy snapshot unchanged: you must be alive." end
+        if not token or #token > 64 or token:find("%c") then
+            return "Usage: !markEventEnemy <index>; copy an exact index from !listEventEnemies."
+        end
+        if not owned() then return refused end
+        local mapName, now = enemyMarkerMap(), CurTime()
+        if not mapName or mapName ~= grant.map or not finiteStatusNumber(now)
+            or not finiteStatusNumber(now + 15) or now + 15 <= now then return refused end
+        if not permitted(true) or not targetCurrent() then return refused end
+        local position = enemy:GetPos()
+        if not isvector(position) then return refused end
+        local x, y, z = position.x, position.y, position.z
+        if not finiteStatusNumber(x) or not finiteStatusNumber(y) or not finiteStatusNumber(z) then return refused end
+        if enemyMarkerMap() ~= mapName or not permitted(true) or not targetCurrent() or not owned() then return refused end
+        ActivatorSnapshotMarker.Send(ply, mapName, "event_enemy", token, x, y, z, now + 15)
+        return "15-second encounter enemy position snapshot sent; the enemy may move. !clearEventEnemyMarker to clear."
+    end)
+    -- Retire only our operation; a nested request owns its own feedback.
+    if ActivatorSnapshotMarker.Retire(ply, operation) and ok and message then
+        pcall(adminLine, ply, message)
+    end
 end
 
 local function removeEventEnemy(ply, text)
@@ -704,11 +786,21 @@ local function printSelectionStatus(ply)
 end
 
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
+    if type(text) ~= "string" then return end
     local command = text:match("^(!%S+)")
+    if command == "!markEventEnemy" or command == "!clearEventEnemyMarker" then
+        sendEventEnemyMarker(ply, text, command == "!clearEventEnemyMarker")
+        return ""
+    end
     if command ~= "!nextEvent" and command ~= "!nextEventRef" and command ~= "!clearNextEvent" and command ~= "!eventStatus"
         and command ~= "!listEvents" and command ~= "!findEvents" and command ~= "!inspectEventRef" and command ~= "!listEventEnemies" and command ~= "!removeEventEnemy" then return end
     if ply == nil then return end
-    local request, inspection, selection
+    local request, inspection, selection, markerCapture
+    if command == "!listEventEnemies" then
+        markerCapture = {owners = activeEnemies, stable = not constructingEnemies}
+        enemyMarkerCaptures[ply], enemyMarkerGrants[ply] = markerCapture, nil
+        ActivatorSnapshotMarker.Cancel(ply)
+    end
     if command == "!listEvents" or command == "!findEvents" then
         request = {}
         catalogRequests[ply] = request
@@ -724,7 +816,7 @@ hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     if command == "!removeEventEnemy" then
         removeEventEnemy(ply, text)
     elseif command == "!listEventEnemies" then
-        printEventEnemies(ply, text)
+        printEventEnemies(ply, text, markerCapture)
     elseif command == "!listEvents" or command == "!findEvents" then
         printEventCatalog(ply, text, request, command == "!findEvents")
     elseif command == "!inspectEventRef" then
@@ -779,11 +871,14 @@ end)
 hook.Add("PlayerDisconnected", "clearActivatorStatusRequest", function(ply)
     statusRequestAfter[ply] = nil
     enemyInspections[ply] = nil
+    enemyMarkerCaptures[ply], enemyMarkerGrants[ply] = nil, nil
+    ActivatorSnapshotMarker.Cancel(ply)
     catalogInspections[ply] = nil
     catalogRequests[ply] = nil
     detailRequests[ply] = nil
 end)
 hook.Add("Initialize", "clearActivatorCatalogReferences", function()
+    enemyMarkerCaptures, enemyMarkerGrants = {}, {}
     catalogInspections = {}
     catalogRequests = {}
     detailRequests = {}
@@ -909,6 +1004,7 @@ hook.Add("PlayerSay", "refreshReadyActivators", function(ply, text)
 end)
 
 local function finishEvent(completed)
+    enemyMarkerCaptures, enemyMarkerGrants = {}, {}
     enemyInspections = {}
     enemyRemovalRequests = {}
     constructingEnemies = nil
