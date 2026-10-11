@@ -29,9 +29,12 @@ including models, NPC classes, dialogue, counts or health.
 At Start, the server separately requires `maxNPCs` to be a finite number at
 least 1, rejecting NaN as well as the other invalid counts. Finite fractions
 keep their existing behavior: 2.75 attempts to create two enemies. Rejection
-consumes that interaction but preserves the ready actors, selected batch,
-queued future choice, timer and encounter progress. These fields are trusted
-server configuration; Start receives only the encounter identifier. Correct
+consumes that interaction and privately tells the requesting player: "This
+encounter has an invalid enemy count. Ask an admin to correct the configuration
+and restart the server." It preserves the ready actors, selected batch, queued
+future choice, timer and encounter progress. Replayed or unauthorized requests
+stay silent. These fields are trusted server configuration; Start receives only
+the encounter identifier. Correct
 invalid configuration and restart the server before normal use. This guard
 does not validate native NPC classes, models or health, or add a count cap.
 
@@ -649,13 +652,15 @@ power-loss durability; do not crash a production server to test it.
 - Missing/empty spawn lists safely pause spawning. Missing enemy spawns leave
   existing activators available and privately tell the requesting player to ask
   an admin to fix the missing enemy position, then use the activator again.
+- Invalid enemy counts also leave activators available and privately tell the
+  requester to ask an admin to correct the configuration and restart the server.
 
-These two failed starts consume the interaction without starting an encounter
+These three failed starts consume the interaction without starting an encounter
 or changing the ready actors, selected batch, future choice, timer or progress.
 An admin repair does not start it automatically; a fresh Use and Start are
 required. Unissued, invalid, mismatched, cancelled and replayed requests stay
 silent, including mismatched or invalid requests after expiry. Guidance uses
-short constant `ChatPrint` text without configured names or positions; it adds
+short constant `ChatPrint` text without raw configuration; it adds
 no addon network message or client behavior.
 
 If activation admits no enemies, the server keeps its existing cleanup: retire
@@ -784,9 +789,11 @@ through real lookup, timer and menu/Start handlers, and check rejection before
 RNG and creation. They cover fresh-use recovery, unchanged storage and selection,
 valid sparse sampling order, and callback invalidation of a partial batch.
 Start-feedback tests transfer the actual menu callback's request to the server
-receiver. They check private expiry/missing-position guidance, the exact 60/61
+receiver. They check private expiry/missing-position/invalid-count guidance, the exact 60/61
 second boundary, consumed replays, silent invalid requests, retained actors and
-selection, and fresh-use recovery after the actual admin repair callback. They
+selection, and fresh-use recovery after the actual admin repair callback.
+Count tests retain enabled/paused schedules, position sampling order and finite
+fractional admissions, and check that earlier rejection reasons keep precedence. They
 also cover private empty-start guidance with enabled/paused spawning, silent
 replays, retained future choice, invalidated requesters, and replacement started
 inside the notice callback. Construction controls distinguish zero admissions

@@ -1,6 +1,7 @@
 -- Exercise the real selected-batch timer, Use and Start handlers. The setup
 -- edits trusted server configuration; Start still receives only an identifier.
 return function(gmod, test, eq)
+    local invalidCount = "This encounter has an invalid enemy count. Ask an admin to correct the configuration and restart the server."
     local function status(env, admin)
         local before=#admin.chats
         eq(env.fire("PlayerSay",admin,"!eventStatus"),"")
@@ -58,13 +59,16 @@ return function(gmod, test, eq)
     end
     local function rejected(count, label, schedule)
         local env,admin,info,actors,before=setup(count,schedule)
+        local observer=env.entity("player"); before=status(env,admin)
+        local chats=#admin.chats
         local calls=observe(env); local timer=env.timers.activatorSpawner
         local stopped=timer.stopped; local messages=#env.messages; local errors=#env.errors
         local definitions,positions=env.NPCEdits,env.SpawnPositions
         local ok,err=pcall(env.receive,"SendNPCInformation",admin,"Ambush")
+        eq(#admin.chats,chats+1,"invalid count explains rejection once to the requester")
+        eq(admin.chats[#admin.chats],invalidCount)
+        eq(#observer.chats,0,"invalid count feedback stays private")
         local after=status(env,admin)
-        -- Read real state even if this stock Lua rejects the NaN loop bound.
-        -- Baseline failure is lost ready state, independent of that difference.
         eq(after,before,label .. " Start preserves ready state")
         assert(ok,label .. " Start raised: " .. tostring(err))
         eq(#env.ents.FindByClass("activatorent"),#actors,"ready actor count")
@@ -86,7 +90,10 @@ return function(gmod, test, eq)
         -- Controlled repair proves grant consumption and retry. Live config
         -- edits still require the documented server restart, not hot-reload.
         info.maxNPCs=2.75
+        chats=#admin.chats
         env.receive("SendNPCInformation",admin,"Ambush")
+        eq(#admin.chats,chats,"consumed replay stays silent after count repair")
+        eq(#observer.chats,0)
         eq(calls.random,1,"replay cannot sample a spawn")
         eq(calls.creates,0,"replay cannot use the corrected count")
         eq(calls.timerChanges,0); eq(#env.messages,messages)
@@ -124,15 +131,19 @@ return function(gmod, test, eq)
         {"zero",0},{"negative",-2},{"fraction below one",0.75},
         {"positive infinity",math.huge},{"negative infinity",-math.huge}
     }) do
-        test("existing invalid count rejection retains readiness: " .. case[1],function()
+        test("invalid count privately explains rejection and retains readiness: " .. case[1],function()
             rejected(case[2],case[1],"at capacity")
         end)
     end
     for _, count in ipairs({1,1.5,2.75,5}) do
         test("finite count keeps floored creation attempts: " .. count,function()
             local env,admin,info=setup(count,"at capacity")
+            local observer=env.entity("player"); local chats=#admin.chats
             local calls=observe(env)
             env.receive("SendNPCInformation",admin,"Ambush")
+            local started=math.floor(count) .. " enemies have been spawned. Eliminate them."
+            eq(#admin.chats,chats+1); eq(admin.chats[#admin.chats],started)
+            eq(#observer.chats,1); eq(observer.chats[1],started)
             local enemies=env.ents.FindByName("devonsSpawnedEntity")
             eq(calls.creates,math.floor(count),"exact creation attempts")
             eq(#enemies,math.floor(count)); eq(env.totalEnemies,math.floor(count))

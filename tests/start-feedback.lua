@@ -6,6 +6,7 @@ return function(gmod, test, eq)
     local expired = "This interaction expired. Use the activator again."
     local missing = "No enemy spawn position is available. Ask an admin to fix it, then use the activator again."
     local empty = "No enemies could be spawned for your encounter. Ask an admin to check the server console."
+    local invalidCount = "This encounter has an invalid enemy count. Ask an admin to correct the configuration and restart the server."
     local started = "2 enemies have been spawned. Eliminate them."
 
     local function storage(env)
@@ -142,6 +143,35 @@ return function(gmod, test, eq)
         end
     end
 
+    for _,paused in ipairs({false,true}) do
+        test("actual Start privately explains invalid count and retains readiness, paused=" .. tostring(paused), function()
+            local server,client,ply,ent,admin,observer,ioState=selected()
+            if paused then server.fire("PlayerSay",admin,"!pauseActivatorSpawns") end
+            ent.NPCInfo.maxNPCs="2"
+            local frame,button=open(server,client,ply,ent)
+            local beforeStatus=status(server,admin)
+            local state=snapshot(server,ioState)
+            local request=click(server,client,ply,frame,button)
+            unchanged(server,state,ioState,ply,invalidCount)
+            eq(status(server,admin),beforeStatus,"invalid count preserves selected batch and pending choice")
+            eq(ent.NPCInfo.maxNPCs,"2","invalid configuration remains untouched")
+            local rejected=snapshot(server,ioState)
+            server.deliver(request,ply); unchanged(server,rejected,ioState,nil,nil)
+
+            -- Controlled repair only proves consumed authority and the fresh Use
+            -- boundary; configuration edits still require a server restart.
+            ent.NPCInfo.maxNPCs=2.75
+            server.deliver(request,ply); unchanged(server,rejected,ioState,nil,nil)
+            frame,button=open(server,client,ply,ent)
+            click(server,client,ply,frame,button)
+            eq(server.totalEnemies,2); eq(#server.ents.FindByClass("activatorent"),0)
+            eq(#ply.chats,2); eq(ply.chats[2],started)
+            eq(#observer.chats,1); eq(observer.chats[1],started)
+            eq(server.messageCount("roundFinished"),0)
+            assert(status(server,admin):find('Pending next batch: "Raid"',1,true))
+        end)
+    end
+
     for _,reason in ipairs({"expired", "missing positions"}) do
         test("actual Start privately explains " .. reason .. " and fresh Use recovers", function()
             local server,client,ply,ent,admin,observer,ioState=selected()
@@ -203,6 +233,37 @@ return function(gmod, test, eq)
         end)
     end
 
+    for _,count in ipairs({1.5,2.75}) do
+        test("actual Start with finite fractional count only announces admitted enemies: " .. count, function()
+            local server,client,ply,ent,admin,observer=selected()
+            ent.NPCInfo.maxNPCs=count
+            local frame,button=open(server,client,ply,ent)
+            local chats=#admin.chats
+            click(server,client,ply,frame,button)
+            local expected=math.floor(count) .. " enemies have been spawned. Eliminate them."
+            eq(server.totalEnemies,math.floor(count)); eq(ent.NPCInfo.maxNPCs,count)
+            eq(#ply.chats,1); eq(ply.chats[1],expected)
+            eq(#observer.chats,1); eq(observer.chats[1],expected)
+            eq(#admin.chats,chats+1); eq(admin.chats[#admin.chats],expected)
+        end)
+    end
+
+    for _,reason in ipairs({"expired", "missing positions"}) do
+        test("actual Start keeps " .. reason .. " feedback ahead of invalid count", function()
+            local server,client,ply,ent,admin,observer,ioState=selected()
+            ent.NPCInfo.maxNPCs=0/0
+            local frame,button=open(server,client,ply,ent)
+            if reason == "expired" then server.now=61
+            else server.SpawnPositions[1].enemySpawnPositions={} end
+            local before=snapshot(server,ioState)
+            local request=click(server,client,ply,frame,button)
+            unchanged(server,before,ioState,ply,reason == "expired" and expired or missing,
+                reason == "missing positions" and 1 or 0)
+            local rejected=snapshot(server,ioState)
+            server.deliver(request,ply); unchanged(server,rejected,ioState,nil,nil)
+        end)
+    end
+
     test("a matching actual Start at exactly 60 seconds still succeeds", function()
         local server,client=gmod.new(),gmod.new(true)
         local ply,ent=server.ready(); local observer=server.entity("player")
@@ -218,41 +279,49 @@ return function(gmod, test, eq)
     local rejected={"unissued", "wrong player", "wrong identifier", "cancelled", "invalid player",
         "non-player", "dead without hook", "death hook", "respawned", "disconnected",
         "invalid actor", "removed actor", "deletion-marked actor", "distant"}
-    for _,time in ipairs({0,61}) do
-        for _,kind in ipairs(rejected) do
-            test("Start feedback stays silent for " .. kind .. " at " .. time .. " seconds", function()
-                local env=gmod.new(); local ioState=storage(env)
-                local ply,ent=env.ready(); local observer=env.entity("player")
-                if kind ~= "unissued" then ent:AcceptInput("Use",ply,ply) end
-                local sender,identifier=ply,"Raid"
-                if kind == "wrong player" then sender=observer
-                elseif kind == "wrong identifier" then identifier="Forged"
-                elseif kind == "cancelled" then env.receive("CloseInteractionMenu",ply,ent)
-                elseif kind == "invalid player" then ply.valid=false
-                elseif kind == "non-player" then ply.class="npc_zombie"
-                elseif kind == "dead without hook" then ply.alive=false
-                elseif kind == "death hook" then ply.alive=false; env.fire("PlayerDeath",ply)
-                elseif kind == "respawned" then env.fire("PlayerSpawn",ply)
-                elseif kind == "disconnected" then env.fire("PlayerDisconnected",ply)
-                elseif kind == "invalid actor" then ent.valid=false
-                elseif kind == "removed actor" then ent:Remove()
-                elseif kind == "deletion-marked actor" then env.deferRemoval=true; ent:Remove()
-                elseif kind == "distant" then ply:SetPos(ent:GetPos()+env.Vector(201,0,0)) end
-                env.now=time
-                local state=snapshot(env,ioState)
-                local senderChats=#sender.chats
-                env.receive("SendNPCInformation",sender,identifier)
-                unchanged(env,state,ioState,nil,nil)
-                eq(env.totalEnemies,0)
-                eq(#sender.chats,senderChats); eq(#observer.chats,state.chats[observer])
-                -- A wrong-player packet must leave the legitimate player's permission intact.
-                if kind == "wrong player" and time == 0 then
-                    env.receive("SendNPCInformation",ply,"Raid"); eq(env.totalEnemies,5)
-                elseif kind == "wrong identifier" then
-                    env.now=0; env.receive("SendNPCInformation",ply,"Raid")
-                    eq(env.totalEnemies,0); eq(#ply.chats,state.chats[ply],"mismatch consumed permission")
-                end
-            end)
+    for _,countKind in ipairs({"valid","invalid"}) do
+        for _,time in ipairs({0,61}) do
+            for _,kind in ipairs(rejected) do
+                test("Start feedback stays silent for " .. kind .. " at " .. time .. " seconds, count=" .. countKind, function()
+                    local env=gmod.new(); local ioState=storage(env)
+                    if countKind == "invalid" then env.NPCEdits[1].information.maxNPCs=0/0 end
+                    local ply,ent=env.ready(); local observer=env.entity("player")
+                    if kind ~= "unissued" then ent:AcceptInput("Use",ply,ply) end
+                    local sender,identifier=ply,"Raid"
+                    if kind == "wrong player" then sender=observer
+                    elseif kind == "wrong identifier" then identifier="Forged"
+                    elseif kind == "cancelled" then env.receive("CloseInteractionMenu",ply,ent)
+                    elseif kind == "invalid player" then ply.valid=false
+                    elseif kind == "non-player" then ply.class="npc_zombie"
+                    elseif kind == "dead without hook" then ply.alive=false
+                    elseif kind == "death hook" then ply.alive=false; env.fire("PlayerDeath",ply)
+                    elseif kind == "respawned" then env.fire("PlayerSpawn",ply)
+                    elseif kind == "disconnected" then env.fire("PlayerDisconnected",ply)
+                    elseif kind == "invalid actor" then ent.valid=false
+                    elseif kind == "removed actor" then ent:Remove()
+                    elseif kind == "deletion-marked actor" then env.deferRemoval=true; ent:Remove()
+                    elseif kind == "distant" then ply:SetPos(ent:GetPos()+env.Vector(201,0,0)) end
+                    env.now=time
+                    local state=snapshot(env,ioState)
+                    local senderChats=#sender.chats
+                    env.receive("SendNPCInformation",sender,identifier)
+                    unchanged(env,state,ioState,nil,nil)
+                    eq(env.totalEnemies,0)
+                    eq(#sender.chats,senderChats); eq(#observer.chats,state.chats[observer])
+                    -- A wrong-player packet must leave the legitimate player's permission intact.
+                    if kind == "wrong player" and time == 0 then
+                        env.receive("SendNPCInformation",ply,"Raid")
+                        eq(env.totalEnemies,countKind == "invalid" and 0 or 5)
+                        if countKind == "invalid" then
+                            eq(#ply.chats,state.chats[ply]+1); eq(ply.chats[#ply.chats],invalidCount)
+                            eq(#observer.chats,state.chats[observer])
+                        end
+                    elseif kind == "wrong identifier" then
+                        env.now=0; env.receive("SendNPCInformation",ply,"Raid")
+                        eq(env.totalEnemies,0); eq(#ply.chats,state.chats[ply],"mismatch consumed permission")
+                    end
+                end)
+            end
         end
     end
 
@@ -278,8 +347,8 @@ return function(gmod, test, eq)
         eq(server.totalEnemies,5); eq(#ply.chats,1); eq(#observer.chats,1)
         eq(ply.chats[1],"5 enemies have been spawned. Eliminate them.")
     end)
-    for _,reason in ipairs({"expired", "missing positions", "empty start"}) do
-        test("Start guidance for " .. reason .. " contains no configured name or position", function()
+    for _,reason in ipairs({"expired", "missing positions", "empty start", "invalid count"}) do
+        test("Start guidance for " .. reason .. " contains no raw configuration", function()
             local server,client=gmod.new(),gmod.new(true)
             local name=string.rep("火",200)
             server.NPCEdits[1].name=name; server.determineRandomEvent=function() return name end
@@ -287,10 +356,12 @@ return function(gmod, test, eq)
             local frame,button=open(server,client,ply,ent)
             if reason == "expired" then server.now=61
             elseif reason == "missing positions" then server.SpawnPositions[1].enemySpawnPositions={}
+            elseif reason == "invalid count" then ent.NPCInfo.maxNPCs=string.rep("private-count-火",200)
             else server.failClass="npc_stalker" end
             click(server,client,ply,frame,button)
             eq(#ply.chats,1); eq(#observer.chats,0)
-            eq(ply.chats[1],reason == "expired" and expired or (reason == "missing positions" and missing or empty))
+            local expected={expired=expired,["missing positions"]=missing,["empty start"]=empty,["invalid count"]=invalidCount}
+            eq(ply.chats[1],expected[reason])
             assert(#ply.chats[1] < 200)
         end)
     end
