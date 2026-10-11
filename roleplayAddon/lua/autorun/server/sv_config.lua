@@ -194,6 +194,8 @@ local function validPositionList(positions)
 end
 
 local spawnInspections = {}
+local spawnMarkerOperations = {}
+util.AddNetworkString("ActivatorSpawnMarker")
 local spawnKinds = {
     enemy = {field = "enemySpawnPositions", remove = "!removeEnemySpawn", move = "!moveEnemySpawn"},
     activator = {field = "activatorSpawnPositions", remove = "!removeActivatorSpawn", move = "!moveActivatorSpawn"},
@@ -255,7 +257,9 @@ end
 
 local function invalidateSpawnInspections(map, kind)
     for admin, inspection in pairs(spawnInspections) do
-        if inspection.map == map and inspection.kind == kind then spawnInspections[admin] = nil end
+        if inspection.map == map and inspection.kind == kind then
+            spawnInspections[admin], spawnMarkerOperations[admin] = nil, nil
+        end
     end
 end
 
@@ -287,7 +291,7 @@ local function spawnBaseDistance(position, x, y, z)
 end
 
 local function printSpawnList(sender, text)
-    spawnInspections[sender] = nil
+    spawnInspections[sender], spawnMarkerOperations[sender] = nil, nil
     local kind, argument = text:match("^!listSpawns%s+(%S+)%s*(.-)%s*$")
     if not spawnKinds[kind] then
         sender:ChatPrint("Usage: !listSpawns enemy|activator [page].")
@@ -347,17 +351,78 @@ local function printSpawnList(sender, text)
         .. (kind == "enemy" and " Enemy placement adds (30,30,0) cumulatively per valid creation." or ""))
 end
 
-local function inspectedSpawnTarget(sender, kind, token)
+local function inspectedSpawnTarget(sender, kind, token, mapName)
     local inspection = spawnInspections[sender]
-    if not inspection or inspection.kind ~= kind or inspection.map ~= game.GetMap()
+    if not inspection or inspection.kind ~= kind or inspection.map ~= (mapName or game.GetMap())
         or not inspection.shown[token] then return nil end
-    local information, positions = editableSpawnList(kind)
+    local information, positions
+    if mapName then information, positions = validatedSpawnList(mapName, kind)
+    else information, positions = editableSpawnList(kind) end
     if not rawequal(information, inspection.information) or not rawequal(positions, inspection.positions) then return nil end
     for _, shown in pairs(inspection.shown) do
         local current = positions[shown.key]
         if not current or current.x ~= shown.x or current.y ~= shown.y or current.z ~= shown.z then return nil end
     end
     return positions, inspection.shown[token].key
+end
+
+-- A request owns only its current stack operation, never the displayed snapshot.
+-- Engine reads can reenter PlayerSay; a newer mark, clear or list wins.
+local function sendSpawnMarker(sender, text, clear)
+    if sender == nil then return end
+    local operation, expected = {}, spawnInspections[sender]
+    spawnMarkerOperations[sender] = operation
+    local function current() return rawequal(spawnMarkerOperations[sender], operation) end
+    local ok, message = pcall(function()
+        if not IsValid(sender) or not sender:IsPlayer() then return end
+        if not sender:IsAdmin() then return "Only admins can mark spawn snapshots." end
+        if clear then
+            if text ~= "!clearSpawnMarker" then return "Usage: !clearSpawnMarker." end
+            if not current() then return end
+            net.Start("ActivatorSpawnMarker")
+            net.WriteBool(false)
+            net.Send(sender)
+            return "Spawn snapshot marker cleared."
+        end
+        if not sender:Alive() then return "Spawn snapshot unchanged: you must be alive." end
+        local kind, token = text:match("^!markSpawn%s+(%S+)%s+(%S+)%s*$")
+        if not spawnKinds[kind] or not token or #token > 64 then
+            return "Usage: !markSpawn enemy|activator <key>; copy an exact key from !listSpawns."
+        end
+        local mapName, now = game.GetMap(), CurTime()
+        if type(mapName) ~= "string" or #mapName == 0 or #mapName > 128 or mapName:find("%c")
+            or not finiteNumber(now) or not finiteNumber(now + 15) or now + 15 <= now then
+            return "Spawn snapshot unchanged: map or time is unavailable."
+        end
+        if not IsValid(sender) or not sender:IsPlayer() or not sender:IsAdmin() or not sender:Alive()
+            or game.GetMap() ~= mapName then return end
+        if not current() or not rawequal(spawnInspections[sender], expected) then return end
+        if not expected then return "Spawn snapshot unchanged: inspect a current key with !listSpawns and copy it exactly." end
+        local positions, key = inspectedSpawnTarget(sender, kind, token, mapName)
+        if not positions then
+            return "Spawn snapshot unchanged: inspect a current key with !listSpawns " .. kind .. " and copy it exactly."
+        end
+        local position = positions[key]
+        local x, y, z = position.x, position.y, position.z
+        if not finiteNumber(x) or not finiteNumber(y) or not finiteNumber(z)
+            or not current() or not rawequal(spawnInspections[sender], expected) then return end
+        net.Start("ActivatorSpawnMarker")
+        net.WriteBool(true)
+        net.WriteString(mapName)
+        net.WriteString(kind)
+        net.WriteString(token)
+        net.WriteDouble(x)
+        net.WriteDouble(y)
+        net.WriteDouble(z)
+        net.WriteDouble(now + 15)
+        net.Send(sender)
+        return "15-second " .. kind .. " stored-base snapshot sent; !clearSpawnMarker to clear."
+    end)
+    -- Never retire a nested request's ownership, or print success before Send.
+    if current() then
+        spawnMarkerOperations[sender] = nil
+        if ok and message then sender:ChatPrint(message) end
+    end
 end
 
 -- Capture once and keep a detached, exact Vector without mutating either source.
@@ -376,7 +441,7 @@ local function copySpawnDestination(sender, previous)
 end
 
 hook.Add("PlayerDisconnected", "clearSpawnInspection", function(sender)
-    spawnInspections[sender] = nil
+    spawnInspections[sender], spawnMarkerOperations[sender] = nil, nil
 end)
 
 -- The save routine is assigned below before any chat command can run.
@@ -392,6 +457,11 @@ end
 hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if type(text) ~= "string" then return end
     local name = text:match("^(!%S+)")
+    if name == "!markSpawn" or name == "!clearSpawnMarker" then
+        sendSpawnMarker(sender, text, name == "!clearSpawnMarker")
+        return ""
+    end
+    if name == "!listSpawns" and sender ~= nil then spawnMarkerOperations[sender] = nil end
     if name == "!saveSpawns" then
         if not IsValid(sender) or not sender:IsPlayer() then return "" end
         if not sender:IsAdmin() then
@@ -601,7 +671,7 @@ hook.Add("ShutDown", "saveTheTables", function()
 end)
 
 hook.Add("Initialize", "loadTheTables", function()
-    spawnInspections = {}
+    spawnInspections, spawnMarkerOperations = {}, {}
     canSaveSpawnPositions = false
     lastGoodSpawnBytes, preparedSpawnBackupBytes = nil, nil
     local read, JSONData, filename = pcall(readSpawnData)

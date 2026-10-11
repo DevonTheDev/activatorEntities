@@ -40,6 +40,8 @@ Admin chat commands:
 - `!setActivatorSpawn` / `!setEnemySpawn`: add your current position for this map
 - `!removeActivatorSpawn` / `!removeEnemySpawn`: remove the last position
 - `!listSpawns enemy|activator [page]`: privately inspect this map's configured positions
+- `!markSpawn enemy|activator <key>`: privately mark one freshly inspected stored base for 15 seconds
+- `!clearSpawnMarker`: privately clear your temporary spawn snapshot
 - `!removeEnemySpawn <key>` / `!removeActivatorSpawn <key>`: remove one freshly inspected position
 - `!moveEnemySpawn <key>` / `!moveActivatorSpawn <key>`: move one freshly inspected position to where you are standing
 - `!saveSpawns`: privately retry the verified save of accepted spawn positions for all maps
@@ -74,8 +76,40 @@ of which base a later spawn will sample. Activators use their stored position as
 the placement input. Enemy placement starts from one sampled base and advances
 by `(30, 30, 0)` for every valid creation: the first uses base + `(30, 30, 0)`,
 the second base + `(60, 60, 0)`, and so on. A distance does not check navigation,
-collision clearance or whether an NPC can reach the point. There is no live
-marker or periodic update; earlier chat output remains a historical snapshot.
+collision clearance or whether an NPC can reach the point. There is no periodic
+update; earlier chat output remains a historical snapshot.
+
+After inspecting a page, a living admin can use `!markSpawn enemy 2` (or
+`!markSpawn activator 2`) with the exact shown key. It sends only that admin one
+labelled, 15-second **stored-base snapshot**; another accepted marker replaces it.
+`!clearSpawnMarker` clears it, including when already clear. The mark does not
+consume or refresh the page's edit permission. Invalid or stale requests preserve
+an existing marker. A new listing replaces admission for future requests, while
+an already sent snapshot keeps its captured coordinates. Later edits, deletion
+or key reuse do not move that historical snapshot or authorize another mark:
+inspect the current page again. Marking never edits, saves, teleports, spawns,
+samples a location or changes the encounter, dialogue or spawn schedule.
+
+Turn toward the point to see its cross inside the viewport. The fixed label and
+help remain while it is behind you or outside view; there is no edge arrow. The
+cross may show through walls and is not a line-of-sight, collision or navigation
+test. Enemy markers show the configured base **before** cumulative placement
+offsets. Extreme finite coordinates can be declined if the native Vector cannot
+copy them exactly or projection fails; chat confirms a snapshot was sent, not
+that it appeared. Short screens trim labels to available space.
+
+Expiry uses synchronized game time, with at most one second of clock tolerance
+on receipt and a separate maximum of 15 local real seconds. A delayed packet has
+only its remaining game-time life. Think and HUD checks permanently discard a
+snapshot on observed expiry, death, loss of admin, invalid/replaced local player
+or map change, and initialization/reload clears it. A failure entirely between
+client callbacks is not observable. Same-map cleanup need not erase a historical
+point. The server stores no displayed markers and sends no automatic refreshes;
+the client sends no marker requests, acknowledgements or retries.
+
+Update both server and client addon files and reconnect. An old client cannot
+show a new marker packet, while an old server may treat the new command as public
+chat. Mixed versions do not provide private-command or display guarantees.
 
 For example, after the list shows key `2`, walk to the replacement location and
 use `!moveEnemySpawn 2`.
@@ -771,3 +805,18 @@ and replication timing; those behaviors still need this in-engine check.
   intentionally not persisted across script reloads
 - Verify native dialogue wrapping, scrolling, focus and model framing with the
   disposable-client checks above
+
+### Temporary marker verification limits
+
+The Lua harness transfers the real server packet through the real client receiver
+and checks exact payload bit counts, typed field order, double-coordinate inputs,
+private destinations, lifecycle, inspection authority and drawing API arguments.
+The payload is one bool, three NUL-terminated strings and four doubles (including
+expiry); clear is exactly one bool bit. Coordinates use `net.WriteDouble`, avoiding
+`net.WriteVector` compression and its ±16384 range loss. These are API/state tests,
+not native packet serialization or pixel checks.
+
+An in-game smoke test is still required for projected alignment/FOV/third-person
+views, native Vector and double network round-trips, font readability/clipping,
+through-wall expectations, hidden HUD behavior, pause timing and two-client
+privacy. No native rendering pass is claimed.

@@ -48,6 +48,9 @@ function M.new(client)
     env._G, env.ENT = env, {}
     env.entities, env.messages, env.receivers, env.hooks, env.timers = {}, {}, {}, {}, {}
     env.now, env.map, env.errors = 0, "gm_construct", {}
+    env.realNow = 0
+    env.RealTime = function() return env.realNow end
+    env.LocalPlayer = function() return env.localPlayer end
     env.IsValid = function(value) return type(value) == "table" and value.valid == true end
     env.CurTime = function() return env.now end
     env.AddCSLuaFile = function() end
@@ -67,6 +70,11 @@ function M.new(client)
     function env.Vector(x, y, z) return setmetatable({x=x, y=y, z=z}, vector) end
     function env.isvector(value) return type(value) == "table" and getmetatable(value) == vector end
     function vector.__add(a, b) return env.Vector(a.x+b.x, a.y+b.y, a.z+b.z) end
+    function vector:ToScreen()
+        env.projections[#env.projections+1] = {x=self.x, y=self.y, z=self.z}
+        if env.projectionError then error("synthetic projection failure") end
+        return env.projection or {x=100, y=100, visible=true}
+    end
     function vector:DistToSqr(other) return (self.x-other.x)^2+(self.y-other.y)^2+(self.z-other.z)^2 end
     env.networkStrings = {}
     env.util = {AddNetworkString = function(name) env.networkStrings[name] = true end}
@@ -83,6 +91,7 @@ function M.new(client)
     end
     function env.net.WriteEntity(value) write("entity", value) end
     function env.net.WriteString(value) assert(type(value) == "string"); write("string", value) end
+    function env.net.WriteDouble(value) assert(type(value) == "number"); write("double", value) end
     function env.net.WriteBool(value) assert(type(value) == "boolean"); write("bool", value) end
     function env.net.WriteUInt(value, bits)
         assert(type(bits) == "number" and bits >= 1 and bits <= 32)
@@ -110,6 +119,7 @@ function M.new(client)
     end
     function env.net.ReadEntity() return read("entity") end
     function env.net.ReadString() return read("string") end
+    function env.net.ReadDouble() return read("double") end
     function env.net.ReadBool() return read("bool") end
     function env.net.ReadUInt(bits) return read("uint", bits) end
     function env.receive(name, sender, ...)
@@ -118,12 +128,21 @@ function M.new(client)
     end
     -- Transfer a real outgoing message between isolated server/client realms,
     -- checking reader order/types without pretending to encode engine packets.
-    function env.deliver(message, sender)
+    function env.packetBits(message)
+        local bits=0
+        for i,field in ipairs(message.fields) do
+            bits=bits+(field.kind == "string" and (#message.values[i]+1)*8
+                or field.kind == "double" and 64 or field.kind == "bool" and 1
+                or field.kind == "entity" and 16 or field.bits or 0)
+        end
+        return bits
+    end
+    function env.deliver(message, sender, bitLength, allowUnread)
         env.incoming, env.incomingFields = {}, {}
         for i, value in ipairs(message.values) do env.incoming[i] = value end
         for i, field in ipairs(message.fields) do env.incomingFields[i] = field end
-        assert(env.receivers[message.name], "Missing receiver: " .. message.name)(0, sender)
-        assert(#env.incoming == 0 and #env.incomingFields == 0, "message fields left unread")
+        assert(env.receivers[message.name], "Missing receiver: " .. message.name)(bitLength or env.packetBits(message), sender)
+        if not allowUnread then assert(#env.incoming == 0 and #env.incomingFields == 0, "message fields left unread") end
         env.incomingFields = nil
     end
     function env.messageCount(name)
@@ -224,6 +243,36 @@ function M.new(client)
     end
     if client then
         env.panels = {}
+        env.drawCalls, env.projections, env.camCalls, env.camDepth = {}, {}, {}, 0
+        env.TEXT_ALIGN_LEFT, env.TEXT_ALIGN_TOP = 0, 0
+        env.cam = {
+            Start3D=function(...)
+                env.camDepth=env.camDepth+1; env.camCalls[#env.camCalls+1]={name="Start3D", args={...}}
+            end,
+            End3D=function()
+                env.camDepth=env.camDepth-1; env.camCalls[#env.camCalls+1]={name="End3D"}
+            end,
+        }
+        env.surface = {
+            SetFont=function(font) env.drawFont=font end,
+            GetTextSize=function(text) return #text*8, 16 end,
+            SetDrawColor=function(...) env.drawColor={...} end,
+            DrawLine=function(x1,y1,x2,y2)
+                env.drawCalls[#env.drawCalls+1]={kind="line",x1=x1,y1=y1,x2=x2,y2=y2}
+            end,
+            DrawRect=function(x,y,w,h)
+                env.drawCalls[#env.drawCalls+1]={kind="rect",x=x,y=y,w=w,h=h}
+            end,
+        }
+        env.draw = {
+            SimpleText=function(text,font,x,y,color,horizontal,vertical)
+                env.drawCalls[#env.drawCalls+1]={kind="text",text=text,font=font,x=x,y=y,
+                    color=color,horizontal=horizontal,vertical=vertical}
+            end,
+            RoundedBox=function(radius,x,y,w,h,color)
+                env.drawCalls[#env.drawCalls+1]={kind="box",x=x,y=y,w=w,h=h}
+            end,
+        }
         env.TOP, env.BOTTOM, env.FILL = 4, 5, 1
         env.screenWidth, env.screenHeight = 1920, 1080
         env.ScrW, env.ScrH = function() return env.screenWidth end, function() return env.screenHeight end
@@ -293,6 +342,7 @@ function M.new(client)
             return panel
         end
         env.include("entities/activatorent/cl_init.lua")
+        env.include("autorun/client/cl_activator_spawn_marker.lua")
     else
         env.include("autorun/server/sv_config.lua")
         env.include("entities/activatorent/init.lua")
