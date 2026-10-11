@@ -47,6 +47,7 @@ Admin chat commands:
 - `!refreshActivators`: retire ready addon activators; restart the normal spawn delay unless paused
 - `!pauseActivatorSpawns` / `!resumeActivatorSpawns`: pause or resume automatic activator spawning for this session
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
+- `!nextEventRef <ref>`: queue an eligible entry from your latest catalog page
 - `!listEvents [page]`: browse all configured names and their selection eligibility
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
@@ -310,23 +311,48 @@ settings are unusable. The catalog does not queue an encounter or alter an activ
 one. Use `!nextEvent Supply Raid: Alpha!` to choose that exact configured name;
 do not add quotation marks merely because the catalog surrounds names with them.
 
-Long names continue across numbered parts, which can span pages. Join the contents
-inside their outer quotes without adding spaces. Entry and part numbers are
-display references, not selection IDs. Names containing control characters use
-an explicitly **escaped diagnostic** representation, not text to paste directly
-into a selection command. Native chat input and third-party chat addons may
-limit which names can be entered.
+Every eligible row now includes a short `ref`, for example `ref r0000000000000012-3`.
+Copy that whole token into `!nextEventRef r0000000000000012-3` to queue its exact configured
+name, including leading/trailing spaces, Unicode, or escaped diagnostic names.
+This command accepts one reference only. It never treats an argument as a name,
+entry number or stored key. `!nextEvent <name>` keeps its exact-name behavior,
+including names that look like numbers or commands.
+
+References belong to the requesting admin's latest successful page and expire
+60 seconds after that page was prepared on the server. A new successful page
+replaces every earlier reference, even for the same entry. A failed page request
+keeps the previous successful page. Selecting once consumes that page; list
+again for another choice. Another admin must list independently. Disconnection
+or session initialization clears references. Changed maps, invalid server time,
+removed/renamed/replaced definitions, replaced information tables, and newly
+duplicated names are refused without changing an existing pending choice.
+
+Long names continue across numbered parts, which can span pages. Parts of one
+entry on a page use the same reference; even a continuation-only page can select
+that entry. Listing the next page gives it a new reference. Entry and part numbers
+remain display labels. To use the older name command, join the contents inside
+the outer quotes without adding spaces. Names containing control characters use
+an explicitly **escaped diagnostic** representation, which is not raw name input;
+the short reference avoids typing or reconstructing that raw name.
 
 Each reply contains at most eight body lines plus a header and footer, with each
 line kept below the [ChatPrint byte limit](https://wiki.facepunch.com/gmod/Player:ChatPrint).
-Invalid or out-of-range pages give usage feedback. Every call reads the current
-configuration; pages are not a saved snapshot across commands. Reading the catalog
-does not sample randomness, advance timers, spawn entities or save data.
+Invalid or out-of-range pages give usage feedback. Every listing reads the current
+configuration. References bind the exact pool, stored key, record, name and
+information-table identity, but do not freeze fields inside that table. After a
+reference is accepted, the existing pending-name selection rules remain live.
+Reading and selecting references do not sample randomness, advance timers,
+spawn/start/remove entities, change ready or active encounters, or save data.
+A queued selection still waits for the ordinary next fresh batch, including
+while automatic spawning is paused. Runtime Lua hot-reload remains unsupported.
 
-Local tests exercise the actual command handler, selection checks, pagination,
-UTF-8 boundaries and lifecycle state with Garry's Mod API doubles. Native chat
-rendering, copying long names and interaction with a deployed chat addon still
-need a live-server check.
+Local tests exercise actual PlayerSay handlers, raw identity/eligibility checks,
+expiry, pagination, UTF-8 boundaries, reentrant callbacks and preserved lifecycle
+state with Garry's Mod API doubles. Native ChatPrint delivery/rendering and
+interaction with a deployed chat addon still need a disposable-server check:
+have two admins list independently, select a long or escaped name by its ref,
+try a stale/refreshed/expired ref, and confirm a queued choice waits for the next
+ordinary fresh batch while ready actors and active encounters stay unchanged.
 
 ### Saved spawn data and recovery
 

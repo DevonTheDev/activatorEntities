@@ -27,6 +27,11 @@ local initialEnemies = 0
 local statusRequestAfter = {}
 local enemyInspections = {}
 local enemyRemovalRequests = {}
+local catalogInspections = {}
+local catalogRequests = {}
+local catalogGeneration = 0
+local catalogMaxGeneration = 9007199254740991
+local catalogLifetime = 60
 local interactionLifetime = 60
 local interactionDistanceSquared = 200 * 200
 
@@ -113,15 +118,14 @@ local function selectionHelp(ply)
     if #names == 0 then adminLine(ply, "No event names are configured.") end
 end
 
--- A fresh, copied catalog is rendered before the first private reply. Entry
--- parts, including diagnostics, share one eight-line page budget; no cursor or
--- encounter state is retained. Eligibility describes !nextEvent, not spawning.
-local function catalogLines()
-    local lines, names, groups = {}, {}, {}
+-- Copy text and exact configuration identities before sending private replies.
+-- Continuation parts share a token; only entries on the shown page are granted.
+local function catalogLines(pool, generation)
+    local lines, names, groups, targets = {}, {}, {}, {}
     local nonTables, missingNames, nonStringNames = 0, 0, 0
-    if NPCEdits == nil then return {"No configured encounters (missing pool)."}, 0 end
-    if type(NPCEdits) ~= "table" then return {"Malformed encounter pool: expected table."}, 0 end
-    for _, event in pairs(NPCEdits) do
+    if pool == nil then return {"No configured encounters (missing pool)."}, 0, targets end
+    if type(pool) ~= "table" then return {"Malformed encounter pool: expected table."}, 0, targets end
+    for key, event in pairs(pool) do
         if type(event) ~= "table" then nonTables = nonTables + 1
         elseif event.name == nil then missingNames = missingNames + 1
         elseif type(event.name) ~= "string" then nonStringNames = nonStringNames + 1
@@ -129,7 +133,8 @@ local function catalogLines()
             local name = event.name
             if not groups[name] then
                 names[#names + 1] = name
-                groups[name] = {count = 0, missing = 0, nonTable = 0}
+                groups[name] = {count = 0, missing = 0, nonTable = 0,
+                    key = key, record = event, information = event.information}
             end
             local group = groups[name]
             group.count = group.count + 1
@@ -149,7 +154,9 @@ local function catalogLines()
         local display = escaped and name:gsub("[%c\\]", function(char)
             return string.format("\\x%02X", char:byte())
         end) or name
-        local suffix = " [" .. status .. "; " .. (escaped and "escaped diagnostic" or "literal") .. ']: "'
+        local token = #reasons == 0 and ("r" .. generation .. "-" .. id) or nil
+        local reference = token and (" ref " .. token) or ""
+        local suffix = reference .. " [" .. status .. "; " .. (escaped and "escaped diagnostic" or "literal") .. ']: "'
         -- Reserving the display length's digit count covers both part numbers,
         -- since no chunk can contain fewer than one byte. Never shorten a name.
         local digits = #tostring(math.max(#display, 1))
@@ -167,6 +174,8 @@ local function catalogLines()
         until first > #display
         for part, chunk in ipairs(chunks) do
             lines[#lines + 1] = "Entry " .. id .. " part " .. part .. "/" .. #chunks .. suffix .. chunk .. '"'
+            if token then targets[#lines] = {token = token, name = name,
+                key = group.key, record = group.record, information = group.information} end
         end
     end
     if nonTables + missingNames + nonStringNames > 0 then
@@ -174,23 +183,151 @@ local function catalogLines()
             .. "; non-string names: " .. nonStringNames .. "."
     end
     if #lines == 0 then lines[1] = "No configured encounters (empty pool)." end
-    return lines, #names
+    return lines, #names, targets
 end
 
-local function printEventCatalog(ply, text)
-    local lines, names = catalogLines()
+local function catalogAdmin(ply)
+    return IsValid(ply) and ply:IsPlayer() and ply:IsAdmin() and IsValid(ply)
+end
+
+local function catalogTime(now)
+    return type(now) == "number" and now == now and now >= 0 and now < math.huge
+end
+
+local function catalogContext()
+    -- Native engine observations form the synchronous commit boundary. Read the
+    -- clock first, then the map; neither normally invokes addon callbacks.
+    local ok, map, now = pcall(function()
+        local now = CurTime()
+        return game.GetMap(), now
+    end)
+    if not ok or type(map) ~= "string" or map == "" or not catalogTime(now) then return end
+    return map, now
+end
+
+local function catalogAdmission(ply)
+    -- Configuration callbacks have finished. Do not invoke another permission
+    -- getter after capturing the final native map/time observations.
+    if not catalogAdmin(ply) then return end
+    return catalogContext()
+end
+
+local function printEventCatalog(ply, text, request)
+    -- Refuse counter exhaustion rather than reuse a generation or touch RNG.
+    if catalogGeneration >= catalogMaxGeneration then
+        if catalogAdmin(ply) and rawequal(catalogRequests[ply], request) then
+            adminLine(ply, "Catalog references exhausted for this server session; the last successful page is unchanged.")
+        end
+        return
+    end
+    local generation = catalogGeneration + 1
+    catalogGeneration = generation
+    local pool = NPCEdits
+    -- Fixed token width keeps continuation boundaries stable across generations.
+    local ok, lines, names, targets = pcall(catalogLines, pool, string.format("%016.0f", generation))
+    if not ok then
+        if catalogAdmin(ply) and rawequal(catalogRequests[ply], request) then
+            adminLine(ply, "Catalog unavailable: configuration could not be inspected. Retry !listEvents.")
+        end
+        return
+    end
     local pages = math.max(1, math.ceil(#lines / 8))
     local argument = text:match("^!listEvents%s*(.-)%s*$")
     local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
     if not page or page < 1 or page > pages then
-        ply:ChatPrint("Usage: !listEvents [page]; page must be a positive integer in 1-" .. pages .. ".")
+        if catalogAdmin(ply) and rawequal(catalogRequests[ply], request) then
+            adminLine(ply, "Usage: !listEvents [page]; page must be a positive integer in 1-" .. pages .. ".")
+        end
         return
     end
-    ply:ChatPrint("Configured encounters, page " .. page .. "/" .. pages .. " (" .. names
-        .. " names). !nextEvent eligibility only; engine unchecked.")
-    for i = (page - 1) * 8 + 1, math.min(page * 8, #lines) do ply:ChatPrint(lines[i]) end
-    ply:ChatPrint("!listEvents <page> (1-" .. pages .. "). Join parts without added spaces. Use !nextEvent <exact name>"
-        .. " (no added quotes); escaped text is diagnostic, not command input.")
+    local map, issued = catalogAdmission(ply)
+    local expires = issued and issued + catalogLifetime
+    -- Engine/player getters can reenter. A newer request or disconnect wins.
+    if not rawequal(catalogRequests[ply], request) then return end
+    if not map or not expires or not catalogTime(expires) or expires <= issued then
+        if IsValid(ply) and ply:IsPlayer() then
+            adminLine(ply, "Catalog unavailable: server map/time could not be checked. Retry !listEvents.")
+        end
+        return
+    end
+    local inspection = {pool = pool, map = map, issued = issued, expires = expires, targets = {}}
+    local replies = {"Configured encounters, page " .. page .. "/" .. pages .. " (" .. names
+        .. " names). !nextEvent eligibility only; engine unchecked."}
+    for i = (page - 1) * 8 + 1, math.min(page * 8, #lines) do
+        replies[#replies + 1] = lines[i]
+        local target = targets[i]
+        if target then inspection.targets[target.token] = target end
+    end
+    replies[#replies + 1] = "!nextEventRef <ref>: shown refs last 60s; one selection per page. !listEvents [page] (1-"
+        .. pages .. ") replaces refs. !nextEvent <exact name> still works; escaped text is diagnostic."
+    -- Install before ChatPrint. Never restore this page after nested callbacks.
+    catalogInspections[ply] = inspection
+    for _, reply in ipairs(replies) do
+        if not catalogAdmin(ply) or not rawequal(catalogRequests[ply], request)
+            or not rawequal(catalogInspections[ply], inspection) then return end
+        ply:ChatPrint(reply)
+    end
+end
+
+local function selectEventReference(ply, text, inspection)
+    local token = text:match("^!nextEventRef%s+(%S+)%s*$")
+    if not token then
+        adminLine(ply, "Usage: !nextEventRef <ref> from your latest !listEvents page (one reference, valid for 60 seconds).")
+        return
+    end
+    local target = inspection and inspection.targets[token]
+    local pool = inspection and inspection.pool
+    -- Preserve ordinary configured property lookup, including inherited fields.
+    -- Copy shallow raw membership/fields first so callbacks cannot add a duplicate
+    -- or replace/rename a record after the eligibility scan and still commit.
+    local records = {}
+    if type(pool) == "table" then
+        for key, record in next, pool do
+            local captured = {record = record}
+            if type(record) == "table" then
+                captured.name = rawget(record, "name")
+                captured.information = rawget(record, "information")
+            end
+            records[key] = captured
+        end
+    end
+    local ok, eligible = pcall(function()
+        return target and target.record.name == target.name
+            and rawequal(target.record.information, target.information)
+            and rawequal(selectableEvent(target.name), target.information)
+    end)
+    local map, now = catalogAdmission(ply)
+    -- Final ownership and raw identity checks happen after all callbacks.
+    local accepted = ok and eligible and target and map and now
+        and rawequal(catalogInspections[ply], inspection)
+        and map == inspection.map and now >= inspection.issued and now < inspection.expires
+        and rawequal(NPCEdits, pool) and type(pool) == "table"
+        and rawequal(rawget(pool, target.key), target.record)
+        and type(target.information) == "table"
+    if accepted then
+        for key, record in next, pool do
+            local captured = records[key]
+            if not captured or not rawequal(captured.record, record)
+                or (type(record) == "table" and (not rawequal(captured.name, rawget(record, "name"))
+                    or not rawequal(captured.information, rawget(record, "information")))) then
+                accepted = false
+                break
+            end
+        end
+        for key in next, records do
+            if rawget(pool, key) == nil then accepted = false break end
+        end
+    end
+    if not accepted then
+        if IsValid(ply) and ply:IsPlayer() then
+            adminLine(ply, "Next event unchanged: reference unavailable. Use !listEvents and copy one eligible ref from your latest page within 60 seconds.")
+        end
+        return
+    end
+    -- Consume before feedback can reenter; the ordinary pending-name path stays live.
+    catalogInspections[ply] = nil
+    pendingSelection = {name = target.name}
+    adminLine(ply, 'Queued for the next fresh automatic batch: "' .. target.name, '".')
 end
 
 -- Status only inspects current inputs; it neither samples nor refreshes state.
@@ -437,8 +574,14 @@ end
 
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     local command = text:match("^(!%S+)")
-    if command ~= "!nextEvent" and command ~= "!clearNextEvent" and command ~= "!eventStatus"
+    if command ~= "!nextEvent" and command ~= "!nextEventRef" and command ~= "!clearNextEvent" and command ~= "!eventStatus"
         and command ~= "!listEvents" and command ~= "!listEventEnemies" and command ~= "!removeEventEnemy" then return end
+    if ply == nil then return end
+    local request, inspection
+    if command == "!listEvents" then
+        request = {}
+        catalogRequests[ply] = request
+    elseif command == "!nextEventRef" then inspection = catalogInspections[ply] end
     if not IsValid(ply) or not ply:IsPlayer() then return end
     if not ply:IsAdmin() then
         adminLine(ply, "Only admins can select, inspect or clean up encounters.")
@@ -449,7 +592,9 @@ hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     elseif command == "!listEventEnemies" then
         printEventEnemies(ply, text)
     elseif command == "!listEvents" then
-        printEventCatalog(ply, text)
+        printEventCatalog(ply, text, request)
+    elseif command == "!nextEventRef" then
+        selectEventReference(ply, text, inspection)
     elseif command == "!nextEvent" then
         local name = text:match("^!nextEvent%s(.*)$")
         if not name or name == "" then selectionHelp(ply) return "" end
@@ -496,6 +641,12 @@ end)
 hook.Add("PlayerDisconnected", "clearActivatorStatusRequest", function(ply)
     statusRequestAfter[ply] = nil
     enemyInspections[ply] = nil
+    catalogInspections[ply] = nil
+    catalogRequests[ply] = nil
+end)
+hook.Add("Initialize", "clearActivatorCatalogReferences", function()
+    catalogInspections = {}
+    catalogRequests = {}
 end)
 
 local function canInteract(ply, ent)

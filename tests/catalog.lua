@@ -34,7 +34,7 @@ return function(gmod, test, eq)
         for page=1,pages do
             if page ~= 1 then lines=catalog(env,admin,page) end
             for i=2,#lines-1 do
-                local id,part,total,status,kind,name=lines[i]:match('^Entry (%d+) part (%d+)/(%d+) %[(.*); (.-)%]: "(.*)"$')
+                local id,part,total,status,kind,name=lines[i]:gsub('^(Entry %d+ part %d+/%d+) ref [%w%-]+ ', '%1 '):match('^Entry (%d+) part (%d+)/(%d+) %[(.*); (.-)%]: "(.*)"$')
                 if id then
                     id,part,total=tonumber(id),tonumber(part),tonumber(total)
                     local entry=found[id] or {parts={},status=status,kind=kind,total=total}
@@ -64,7 +64,7 @@ return function(gmod, test, eq)
         for i,row in ipairs(rows) do
             eq(row.name,string.format("Encounter %02d",i)); eq(pool[i*13].name,row.name)
         end
-        local _,first=catalog(env,admin); local _,again=catalog(env,admin,1); eq(first,again)
+        local _,first=catalog(env,admin); local _,again=catalog(env,admin,1); eq(first:gsub("(\nEntry %d+ part %d+/%d+) ref [%w%-]+ ", "%1 "),again:gsub("(\nEntry %d+ part %d+/%d+) ref [%w%-]+ ", "%1 "))
         eq(env.NPCEdits,pool); eq(pool[1],nil,"configuration was not sorted in place")
     end)
     test("catalog preserves exact case spaces punctuation quotes and literal backslashes",function()
@@ -168,7 +168,7 @@ return function(gmod, test, eq)
     test("catalog accepts default and positive decimal pages with surrounding whitespace",function()
         local env,admin=configured(); local _,first=catalog(env,admin)
         for _,command in ipairs({"!listEvents 1","!listEvents 01","!listEvents ","!listEvents\t1 ","!listEvents   1  "}) do
-            local _,text=say(env,admin,command); eq(text,first)
+            local _,text=say(env,admin,command); eq(text:gsub("(\nEntry %d+ part %d+/%d+) ref [%w%-]+ ", "%1 "),first:gsub("(\nEntry %d+ part %d+/%d+) ref [%w%-]+ ", "%1 "))
         end
     end)
     test("catalog checks valid players and admins and ignores lookalike command tokens",function()
