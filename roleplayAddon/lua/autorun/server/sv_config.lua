@@ -477,7 +477,7 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if type(text) ~= "string" then return end
     local name = text:match("^(!%S+)")
     -- Encounter commands claim their own capture/operation before any guards.
-    if name == "!markEventEnemy" or name == "!clearEventEnemyMarker" or name == "!listEventEnemies" then return end
+    if name == "!markEventEnemy" or name == "!clearEventEnemyMarker" or name == "!listEventEnemies" or name == "!nearEventEnemies" then return end
     if name == "!markSpawn" or name == "!clearSpawnMarker" then
         sendSpawnMarker(sender, text, name == "!clearSpawnMarker")
         return ""

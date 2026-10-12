@@ -85,6 +85,7 @@ Admin chat commands:
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
 - `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
+- `!nearEventEnemies [page]`: privately inspect those enemies by current 3D distance from a living admin
 - `!markEventEnemy <index>`: privately mark one freshly inspected remaining enemy's current position for 15 seconds
 - `!clearEventEnemyMarker`: privately clear the shared temporary snapshot slot
 
@@ -337,9 +338,28 @@ for that admin until their next successful page, an accepted removal request,
 disconnection or encounter retirement. Listing has no gameplay, timer, randomness,
 saved-data or network-publication side effects.
 
+A living admin can instead use `!nearEventEnemies [page]` for nearest-first
+ordering from their captured position at request time. It uses straight-line 3D
+Source units, including height, with six significant digits in the approximate
+distance display. Ranking uses the captured unrounded coordinates. Equal distances
+use the existing numeric-index and position-text order; unavailable enemy distances
+remain listed last. A usable current map and finite native requester position are
+required. If that position is unavailable, use `!listEventEnemies [page]`.
+
+Each nearest page captures the admin and all included enemies once, including rows
+on other pages. Actor or enemy movement, kills and removals can move rows between
+fresh requests. There is no radius, cursor, navigation route, visibility test or
+reachability guarantee. The action token is the exact displayed entity index,
+never its distance rank. A successful nearest page supplies the same private
+marker/removal selection as a successful ordinary page. A failed nearest attempt
+retires marker permission while preserving the last successful removal page;
+current action admission still applies. A capture superseded during getters cannot
+overwrite a newer page. Ordinary listing retains its existing output and ordering.
+
 ### Mark one inspected encounter enemy
 
-After a successful `!listEventEnemies [page]` outside encounter construction, a
+After a successful `!listEventEnemies [page]` or `!nearEventEnemies [page]` outside
+encounter construction, a
 living admin can use `!markEventEnemy <index>` with one exact index shown on that
 page. The server captures that same owned enemy's current position **at mark
 time**, including fractional coordinates. It sends only that admin a 15-second
@@ -352,7 +372,8 @@ actual selected page can be marked; duplicate indices, including duplicates on
 other pages, grant no target. Changed indices, killed/removed/deleting enemies,
 pending cleanup, a retired/replaced encounter and stale pages require a fresh
 inspection. The server retains the selected object and never finds a replacement
-by its index. Any newer `!listEventEnemies` attempt, even a failed one, invalidates
+by its index. Any newer `!listEventEnemies` or `!nearEventEnemies` attempt, even a
+failed one, invalidates
 marker permission; existing removal permission still follows the successful-page
 rules above. A page captured while construction is in progress cannot authorize
 a later mark: list again once construction finishes. Stable interrupted encounters
@@ -384,7 +405,8 @@ handling or display.
 
 ### Remove one inspected encounter enemy
 
-After `!listEventEnemies`, an admin can use `!removeEventEnemy <index>` with the
+After `!listEventEnemies` or `!nearEventEnemies`, an admin can use
+`!removeEventEnemy <index>` with the
 exact index shown on their latest page. This requests removal of that one captured
 owned enemy, keeps the other enemies fighting and preserves the queued next event.
 Each accepted request consumes that admin's page; list again before another cleanup.

@@ -595,18 +595,80 @@ local function enemyMarkerMap()
         and not mapName:find("%c") then return mapName end
 end
 
-local function printEventEnemies(ply, text, capture)
-    local argument = text:match("^!listEventEnemies%s*(.-)%s*$")
+-- Nearest reads native coordinates once; only detached scalar fields reach sort.
+local function enemyNearestCoordinates(entity)
+    local ok, x, y, z = pcall(function()
+        local position = entity:GetPos()
+        if not isvector(position) then return end
+        local px, py, pz = position.x, position.y, position.z
+        if finiteStatusNumber(px) and finiteStatusNumber(py) and finiteStatusNumber(pz) then
+            return px, py, pz
+        end
+    end)
+    if ok then return x, y, z end
+end
+
+local function enemyNearestDistance(x, y, z, originX, originY, originZ)
+    -- Native GLua uses floats; promote stock-Lua test integers before subtraction.
+    local dx, dy, dz = x * 1.0 - originX * 1.0, y * 1.0 - originY * 1.0, z * 1.0 - originZ * 1.0
+    if not finiteStatusNumber(dx) or not finiteStatusNumber(dy) or not finiteStatusNumber(dz) then return end
+    local scale = math.max(math.abs(dx), math.abs(dy), math.abs(dz))
+    if scale == 0 then return 0 end
+    dx, dy, dz = dx / scale, dy / scale, dz / scale
+    local distance = scale * math.sqrt(dx * dx + dy * dy + dz * dz)
+    if finiteStatusNumber(distance) then return distance end
+end
+
+local function enemyNearestAdmitted(ply, alive)
+    local ok, admitted = pcall(function()
+        return IsValid(ply) and ply:IsPlayer() and ply:IsAdmin() and (not alive or ply:Alive())
+    end)
+    return ok and admitted
+end
+
+local function enemyNearestRejection(ply, capture, message)
+    -- Recipient getters can supersede the request too; check identity afterward.
+    if enemyNearestAdmitted(ply, false) and rawequal(enemyMarkerCaptures[ply], capture) then
+        pcall(function() ply:ChatPrint(message) end)
+    end
+end
+
+local function printEventEnemies(ply, text, capture, nearest)
+    local command = nearest and "!nearEventEnemies" or "!listEventEnemies"
+    local argument = text:match("^" .. command .. "%s*(.-)%s*$")
     local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
-    local usage = "Usage: !listEventEnemies [page]; page must be a positive integer"
+    local usage = "Usage: " .. command .. " [page]; page must be a positive integer"
+    local function reject(message)
+        if nearest then enemyNearestRejection(ply, capture, message)
+        else ply:ChatPrint(message) end
+    end
+    local function current()
+        return capture and rawequal(enemyMarkerCaptures[ply], capture)
+            and rawequal(activeEnemies, capture.owners)
+    end
+    if nearest and not current() then return end
     if not finiteStatusNumber(page) or page < 1 or page ~= math.floor(page) then
-        ply:ChatPrint(usage .. ".")
+        reject(usage .. ".")
         return
     end
-    if not eventActive then ply:ChatPrint("No active encounter.") return end
+    if not eventActive then reject("No active encounter.") return end
 
     local owners, copied = activeEnemies, {}
     local markerMap = enemyMarkerMap()
+    local originX, originY, originZ
+    if nearest then
+        if not current() then return end
+        if not markerMap then
+            reject("Nearest inspection unavailable: current map is unavailable. Use !listEventEnemies [page].")
+            return
+        end
+        originX, originY, originZ = enemyNearestCoordinates(ply)
+        if not enemyNearestAdmitted(ply, true) or not current() or not eventActive then return end
+        if originX == nil then
+            reject("Nearest inspection unavailable: your current world position is unavailable. Use !listEventEnemies [page].")
+            return
+        end
+    end
     local name, remaining, initial = activeEventName, totalEnemies, initialEnemies
     for enemy in pairs(owners) do copied[#copied + 1] = enemy end
     local rows, indexCounts, omitted = {}, {}, 0
@@ -616,40 +678,82 @@ local function printEventEnemies(ply, text, capture)
             local index, token = enemyLocationIndex(enemy)
             if token then indexCounts[token] = (indexCounts[token] or 0) + 1 end
             local prefix = token and ("Entity index " .. token .. ": ") or "Unindexed: index unavailable; "
-            rows[#rows + 1] = {index = index, token = token, enemy = enemy,
-                text = prefix .. enemyLocationPosition(enemy) .. "."}
+            if nearest then
+                local x, y, z = enemyNearestCoordinates(enemy)
+                local position, distance = "world position unavailable", nil
+                if x ~= nil then
+                    position = "approx rounded world position (" .. enemyLocationNumber(x) .. ", "
+                        .. enemyLocationNumber(y) .. ", " .. enemyLocationNumber(z) .. ")"
+                    distance = enemyNearestDistance(x, y, z, originX, originY, originZ)
+                end
+                local legacyText = prefix .. position .. "."
+                local suffix = distance and ("; ~" .. string.format("%.6g", distance) .. " units away")
+                    or "; distance unavailable"
+                rows[#rows + 1] = {index = index, token = token, enemy = enemy, distance = distance,
+                    legacyText = legacyText, text = prefix .. position .. suffix .. "."}
+            else
+                rows[#rows + 1] = {index = index, token = token, enemy = enemy,
+                    text = prefix .. enemyLocationPosition(enemy) .. "."}
+            end
         end
     end
+    if nearest and not current() then return end
     if not eventActive or activeEnemies ~= owners then
-        ply:ChatPrint("Encounter changed during inspection. Retry !listEventEnemies [page].")
+        reject("Encounter changed during inspection. Retry " .. command .. " [page].")
         return
     end
     table.sort(rows, function(a, b)
+        if nearest then
+            if a.distance and b.distance and a.distance ~= b.distance then return a.distance < b.distance end
+            if a.distance and not b.distance then return true end
+            if b.distance and not a.distance then return false end
+        end
         if a.index and b.index and a.index ~= b.index then return a.index < b.index end
         if a.index and not b.index then return true end
         if b.index and not a.index then return false end
-        return a.text < b.text
+        return (a.legacyText or a.text) < (b.legacyText or b.text)
     end)
     local pages = math.max(1, math.ceil(#rows / 8))
-    if page > pages then ply:ChatPrint(usage .. " in 1-" .. pages .. ".") return end
-    local replies = {enemyLocationName(name), "Enemy locations, page " .. page .. "/" .. pages
+    if page > pages then reject(usage .. " in 1-" .. pages .. ".") return end
+    local replies = {enemyLocationName(name), (nearest and "Nearest enemy locations, page " or "Enemy locations, page ") .. page .. "/" .. pages
         .. ": progress " .. remaining .. "/" .. initial .. "; listed " .. #rows
         .. "; omitted invalid/deleting " .. omitted .. "."}
+    if nearest then
+        replies[#replies + 1] = "Approx. distance from your captured position at request time, in 3D Source units; unknown distances last."
+    end
     local targets = {}
     for i = (page - 1) * 8 + 1, math.min(page * 8, #rows) do
         local row = rows[i]
         replies[#replies + 1] = row.text
         if row.token and indexCounts[row.token] == 1 then targets[row.token] = row.enemy end
     end
-    replies[#replies + 1] = "Temporary entity indices can be reused. !listEventEnemies [page] (1-" .. pages .. "); fresh snapshot."
+    replies[#replies + 1] = "Temporary entity indices can be reused. " .. command .. " [page] (1-" .. pages
+        .. (nearest and "); fresh snapshot; pages can move." or "); fresh snapshot.")
     replies[#replies + 1] = "!removeEventEnemy <index> requests one listed enemy's removal; interrupts the encounter (no victory). List again after each request."
+    local currentMap
+    if nearest then
+        currentMap = enemyMarkerMap()
+        if not enemyNearestAdmitted(ply, true) or not current() then return end
+        if not eventActive or not rawequal(activeEnemies, owners) or currentMap ~= markerMap then
+            reject("Nearest inspection context changed. Retry !nearEventEnemies [page].")
+            return
+        end
+        -- Actor getters can change the map after the earlier observation. Keep
+        -- that read's actor checks, then confirm once and recheck capture ownership.
+        currentMap = enemyMarkerMap()
+        if not current() then return end
+        if not eventActive or not rawequal(activeEnemies, owners) or currentMap ~= markerMap then
+            reject("Nearest inspection context changed. Retry !nearEventEnemies [page].")
+            return
+        end
+    end
     -- Install before replies: nested inspection or retirement must win.
     local inspection = {owners = owners, targets = targets}
     enemyInspections[ply] = inspection
-    -- A marker grant follows this exact legacy page, never a reconstructed index.
-    -- Older getter captures may still install their legacy page; fail closed if
-    -- that page and a newer marker grant disagree, without changing cleanup.
-    local currentMap = enemyMarkerMap()
+    -- A marker grant follows this exact page, never a reconstructed index.
+    -- Older legacy getter captures may still install their removal page; fail
+    -- closed if that page and a newer marker grant disagree, without cleanup changes.
+    if not nearest then currentMap = enemyMarkerMap() end
     if capture and rawequal(enemyMarkerCaptures[ply], capture) and capture.stable
         and rawequal(capture.owners, owners) and eventActive and not constructingEnemies
         and rawequal(activeEnemies, owners) and rawequal(enemyInspections[ply], inspection)
@@ -793,13 +897,24 @@ hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
         return ""
     end
     if command ~= "!nextEvent" and command ~= "!nextEventRef" and command ~= "!clearNextEvent" and command ~= "!eventStatus"
-        and command ~= "!listEvents" and command ~= "!findEvents" and command ~= "!inspectEventRef" and command ~= "!listEventEnemies" and command ~= "!removeEventEnemy" then return end
-    if ply == nil then return end
+        and command ~= "!listEvents" and command ~= "!findEvents" and command ~= "!inspectEventRef" and command ~= "!listEventEnemies" and command ~= "!nearEventEnemies" and command ~= "!removeEventEnemy" then return end
+    if ply == nil then return command == "!nearEventEnemies" and "" or nil end
     local request, inspection, selection, markerCapture
-    if command == "!listEventEnemies" then
+    if command == "!listEventEnemies" or command == "!nearEventEnemies" then
         markerCapture = {owners = activeEnemies, stable = not constructingEnemies}
         enemyMarkerCaptures[ply], enemyMarkerGrants[ply] = markerCapture, nil
         ActivatorSnapshotMarker.Cancel(ply)
+    end
+    if command == "!nearEventEnemies" then
+        if not enemyNearestAdmitted(ply, true) then
+            enemyNearestRejection(ply, markerCapture, "Nearest inspection requires a living admin.")
+            return ""
+        end
+        local ok = pcall(printEventEnemies, ply, text, markerCapture, true)
+        if not ok then
+            enemyNearestRejection(ply, markerCapture, "Nearest inspection unavailable. Retry !nearEventEnemies [page] or use !listEventEnemies [page].")
+        end
+        return ""
     end
     if command == "!listEvents" or command == "!findEvents" then
         request = {}
