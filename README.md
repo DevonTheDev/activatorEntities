@@ -38,6 +38,30 @@ the encounter identifier. Correct
 invalid configuration and restart the server before normal use. This guard
 does not validate native NPC classes, models or health, or add a count cap.
 
+After expiry, enemy-position and count validation, Start also requires
+`npcPath` to be a string. A non-string consumes only that player's interaction
+and privately reports: "This encounter has an invalid enemy class. Ask an admin
+to correct the configuration and restart the server." The ready actors, other
+players' interactions, selected batch, queued choice, schedule, counts and saved
+configuration stay intact. Replays remain silent; repair requires a fresh Use.
+The existing single enemy-position draw still occurs before count/class checks.
+
+This is a trusted-configuration policy extension, not a native crash fix.
+[Facepunch documents `ents.Create`](https://wiki.facepunch.com/gmod/ents.Create)
+with a string class argument and a `NULL` result for nonexistent classes. Every
+string passes this guard unchanged, including empty, numeric-looking and unknown
+strings; the existing failed-creation lifecycle still handles invalid results.
+The check does not verify class existence, model validity or engine behavior.
+
+Ordinary inherited fields remain supported. Admission adds one `info.npcPath`
+lookup before construction, so a custom getter observes an extra read at that
+time. The loop still reads the field separately for each creation attempt;
+callbacks or getters can change configuration after admission, including changing
+the class to a non-string. This is an initial type check, not continuing
+validation, a frozen configuration snapshot or exception supervision. Getter and
+creation exceptions remain outside this guard. Local API doubles verify the
+policy and ordering only; native GMod creation and chat delivery are unverified.
+
 Enemy health has a separate, number-type-only check after each eligible NPC's
 existing health lookup and ownership check. The first non-number sample (including
 nil, tables, booleans and numeric strings) deliberately cancels that partial
@@ -885,10 +909,11 @@ power-loss durability; do not crash a production server to test it.
 - Missing/empty spawn lists safely pause spawning. Missing enemy spawns leave
   existing activators available and privately tell the requesting player to ask
   an admin to fix the missing enemy position, then use the activator again.
-- Invalid enemy counts also leave activators available and privately tell the
-  requester to ask an admin to correct the configuration and restart the server.
+- Invalid enemy counts and non-string enemy classes also leave activators
+  available and privately tell the requester to ask an admin to correct the
+  configuration and restart the server.
 
-These three failed starts consume the interaction without starting an encounter
+These four failed starts consume the interaction without starting an encounter
 or changing the ready actors, selected batch, future choice, timer or progress.
 An admin repair does not start it automatically; a fresh Use and Start are
 required. Unissued, invalid, mismatched, cancelled and replayed requests stay
@@ -1007,6 +1032,15 @@ state, consumed replay, fresh-Use retry after a controlled table repair, normal
 completion and the separately queued next encounter. Existing invalid-count and
 finite fractional controls preserve the prior rejection and floor behavior.
 The controlled repair is a test fixture, not support for live Lua hot-reload.
+Class-admission tests exercise missing, boolean, number, hostile-table, function
+and thread fields through the actual selected-batch timer, Use and Start handlers.
+They check private constant correction, retained readiness and other players'
+Start/Cancel grants, running/capacity-stopped/paused schedules, queued selection,
+no creation/removal/health/persistence work, consumed replay and fresh-Use repair.
+Controls preserve expiry/position/count precedence, inherited strings, fractional
+counts, per-attempt class changes and the extra inherited getter read. Empty and
+unknown strings explicitly model an invalid Create result; the general double
+remains permissive and supplies no evidence of native non-string failure.
 Health-admission tests exercise the real Start receiver with nil/table samples
 at the first and second eligible NPC, immediate/deferred cleanup, enabled/paused
 schedules, consumed batches, and private correction. Controlled callbacks cover

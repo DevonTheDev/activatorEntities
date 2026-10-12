@@ -1265,6 +1265,11 @@ net.Receive("SendNPCInformation", function(_, ply)
         return
     end
 
+    if type(info.npcPath) ~= "string" then
+        ply:ChatPrint("This encounter has an invalid enemy class. Ask an admin to correct the configuration and restart the server.")
+        return
+    end
+
     clearSelectedBatch()
     local enemies = activeEnemies
     constructingEnemies = enemies
