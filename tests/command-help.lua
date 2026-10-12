@@ -7,7 +7,7 @@ return function(gmod, test, eq)
             "spawns - inspect and edit saved spawn bases",
             "enemies - inspect or remove tracked encounter enemies",
             "markers - temporary private position snapshots",
-            "control - status, pause/resume, stop and refresh",
+            "control - status, pause/resume, stop, refresh and spawn now",
             "All listed commands require admin. Help changes nothing and never renews a page or ref.",
         },
         ["events"] = {
@@ -65,6 +65,8 @@ return function(gmod, test, eq)
             "!stopEvent - remove current encounter enemies; restart the normal delay unless paused.",
             "!refreshActivators - retire ready addon actors, including manual ones; refused during an active encounter.",
             "Stop/refresh preserve the pending choice. Refresh restarts the normal delay unless paused.",
+            "!spawnActivatorsNow - one ordinary ready-batch attempt now; refused while paused, fighting, spawning or any ready actor exists.",
+            "Spawn now keeps player/position/event/capacity checks, may consume the queued choice, and never schedules a retry.",
             "These control commands take no extra arguments. A fresh session starts with automatic spawning enabled.",
         },
     }
@@ -167,11 +169,11 @@ return function(gmod, test, eq)
             if kind == "nonadmin" then eq(admin.chats[1], denial) end
         end)
     end
-    test("command help coexists with all 24 PlayerSay hook orders", function()
-        local names = {"setUpSpawnPoints", "selectNextActivatorEvent", "controlAutomaticActivatorSpawns", "refreshReadyActivators"}
+    test("command help coexists with all 120 PlayerSay hook orders", function()
+        local names = {"setUpSpawnPoints", "selectNextActivatorEvent", "controlAutomaticActivatorSpawns", "refreshReadyActivators", "spawnReadyActivatorsNow"}
         local count = 0
         local function visit(order, used)
-            if #order == 4 then
+            if #order == 5 then
                 local env, admin = setup(); local result
                 for _, name in ipairs(order) do
                     result = env.hooks.PlayerSay[name](admin, "!activatorHelp")
@@ -185,10 +187,10 @@ return function(gmod, test, eq)
                 order[#order] = nil; used[name] = nil
             end end
         end
-        visit({}, {}); eq(count, 24)
+        visit({}, {}); eq(count, 120)
     end)
     local names = {"interactions", "activeEnemies", "constructingEnemies", "eventActive", "automaticSpawnsPaused",
-        "spawnScheduleGeneration", "pendingSelection", "selectedBatchName", "selectedBatchEntities", "catalogInspections",
+        "spawnScheduleGeneration", "spawnAttemptDepth", "pendingSelection", "selectedBatchName", "selectedBatchEntities", "catalogInspections",
         "catalogRequests", "detailRequests", "catalogGeneration", "enemyInspections", "enemyHealthRequests",
         "enemyRemovalRequests", "enemyMarkerCaptures", "enemyMarkerGrants", "spawnInspections", "spawnMarkerOperations",
         "spawnCatalogueRequests"}

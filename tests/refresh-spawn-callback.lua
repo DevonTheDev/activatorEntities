@@ -1,13 +1,9 @@
 -- Exercise the actual refresh command from real automatic Spawn callbacks.
 -- Doubles prove retirement/order and timer API calls, not native elapsed delay.
 return function(gmod, test, eq)
+    local upvalue = dofile("tests/find-upvalue.lua")
     local function private(env, wanted)
-        for i=1,100 do
-            local name,value=debug.getupvalue(env.timers.activatorSpawner.callback,i)
-            if name == wanted then return value end
-            if not name then break end
-        end
-        error("missing private state: " .. wanted)
+        return upvalue(env.timers.activatorSpawner.callback, wanted)
     end
     local function say(env, admin, command)
         eq(env.fire("PlayerSay",admin,command),"","command handled privately")

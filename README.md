@@ -78,6 +78,7 @@ Admin chat commands:
 - `!saveSpawns`: privately retry the verified save of accepted spawn positions for all maps
 - `!stopEvent`: remove the current event's enemies; restart the spawn delay unless paused
 - `!refreshActivators`: retire ready addon activators; restart the normal spawn delay unless paused
+- `!spawnActivatorsNow`: attempt one fresh ready batch now when enabled, idle and empty
 - `!pauseActivatorSpawns` / `!resumeActivatorSpawns`: pause or resume automatic activator spawning for this session
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
 - `!nextEventRef <ref>`: queue an eligible entry from your latest catalog page
@@ -278,8 +279,9 @@ including when no activators are present. While paused, it keeps spawning paused
 and says so in its private reply. It does not spawn immediately or start an
 encounter. The next normal attempt still requires enough players, usable
 configuration and spawn positions,
-and available capacity. A pending choice is consumed only after a fresh
-activator successfully spawns. Use `!eventStatus` to inspect blocked conditions.
+and available capacity. A pending choice is consumed only after a fresh actor
+returns from `Spawn` valid and not marked for deletion. Use `!eventStatus` to
+inspect blocked conditions.
 
 Active encounters refuse this command without changing their enemies or
 progress. Use the separate `!stopEvent` command if you intend to cancel a fight.
@@ -298,6 +300,50 @@ server is still needed to check native timer timing, replicated removal, open
 dialogue retirement and chat-addon interaction. Include a manually spawned
 activator, queue a different encounter, refresh after moving a point, and verify
 that only a later ordinary spawn uses the new position and queued definition.
+
+### Attempt a ready batch now
+
+An admin can use exact `!spawnActivatorsNow` with no arguments to make one
+ordinary ready-batch attempt immediately. Dead admins can also use it. Replies
+are private and bounded; extra arguments give usage help. It refuses while
+spawning is paused, an encounter is active, another spawn attempt is in flight,
+or any valid, non-deleting `activatorent` exists, including manual actors and
+actors left by an earlier error. Refusals leave selected ownership, the pending
+choice, RNG and the schedule unchanged.
+
+An admitted request still checks minimum players, current-map activator
+positions, event selection and capacity in the ordinary order. It uses the
+pending choice for an empty batch, otherwise ordinary random selection. It
+neither unpauses spawning nor changes configuration, removes actors or starts
+combat. Players still use an activator to start an encounter. Use the separate
+`!refreshActivators` command to retire existing ready actors and restart the
+normal delay; refresh remains a delayed operation.
+
+The command reports an admission blocker, the final observed ready count and
+capacity, an interruption, or an error. A valid actor returning from `Spawn`
+can consume only the exact pending selection admitted for that batch. A
+selection replaced or cleared inside another addon's callback is not consumed
+by the old attempt, even when its replacement uses the same name. A false
+`Spawn` return value retains the existing behavior: actor validity and deletion
+state determine admission, not that return value. These observations do not
+prove native placement or successful engine spawning.
+
+The command does not start, replace, restart or rewind the existing timer.
+The reused ordinary attempt still stops it on reaching capacity, and existing
+lifecycle/control callbacks retain their timer effects. Zero, partial and
+error outcomes schedule no retry, including when the timer was already stopped.
+An error can leave actors or consume the admitted choice before it occurs;
+there is no rollback. Inspect the current state before deciding what to do next.
+
+Pause, pause followed by resume, and refresh from a Spawn callback retire the
+old attempt after ownership is completed for any surviving actor. An encounter
+left active by a callback also stops further work by this immediate command.
+Interrupted attempts report that outcome without another stale recount or
+capacity stop. An encounter that starts and fully finishes within one callback
+is not detected as an interruption. Ordinary timed callback behavior is
+preserved. Native timer timing, callback interactions, chat privacy/rendering,
+replicated removal and world placement still need a disposable Garry's Mod
+server check; the local suite uses API doubles.
 
 ### Pause automatic activator spawning
 
@@ -345,10 +391,13 @@ rejected without losing an existing pending choice. A later valid selection
 replaces the one pending slot. This choice lasts only for the current server
 session and is not written into spawn data.
 
-The choice waits for a normal timed spawn with no active encounter or existing
-usable activators. It respects player requirements, spawn positions, delay and
-capacity. It is consumed only after an activator successfully appears; failed
-attempts leave it pending. Automatic refills keep the chosen name while that
+The choice waits for a fresh batch with no active encounter or existing usable
+activators: either a normal timed attempt or an explicit `!spawnActivatorsNow`
+request. Both respect player requirements, spawn positions and capacity; only
+the command attempts it before the normal delay. The choice is consumed after
+an actor returns from `Spawn` valid and not marked for deletion. An attempt
+that creates no usable actor leaves it pending; an error after a usable actor
+may already have consumed it. Automatic refills keep the chosen name while that
 selected batch still has its own activators. Manually spawned actors do not
 consume a pending choice or keep a departed selected batch alive.
 
@@ -591,8 +640,9 @@ information-table identity, but do not freeze fields inside that table. After a
 reference is accepted, the existing pending-name selection rules remain live.
 Reading and selecting references do not sample randomness, advance timers,
 spawn/start/remove entities, change ready or active encounters, or save data.
-A queued selection still waits for the ordinary next fresh batch, including
-while automatic spawning is paused. Runtime Lua hot-reload remains unsupported.
+A queued selection waits for the next fresh timed batch or an admitted
+`!spawnActivatorsNow` request. Both remain blocked while automatic spawning is
+paused. Runtime Lua hot-reload remains unsupported.
 
 Local tests exercise actual PlayerSay handlers, raw identity/eligibility checks,
 expiry, pagination, UTF-8 boundaries, reentrant callbacks and preserved lifecycle

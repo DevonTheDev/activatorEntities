@@ -21,14 +21,7 @@ return function(gmod, test, eq)
         env.ents.Create=create
         return ok,err,attempts
     end
-    local function private(callback,wanted)
-        for i=1,100 do
-            local name,value=debug.getupvalue(callback,i)
-            if not name then break end
-            if name == wanted then return value end
-        end
-        error("missing observed upvalue " .. wanted)
-    end
+    local private = dofile("tests/find-upvalue.lua")
     local function state(env,name) return private(env.timers.activatorSpawner.callback,name) end
     local function queue(env,admin,name)
         eq(env.fire("PlayerSay",admin,"!nextEvent " .. name),"")

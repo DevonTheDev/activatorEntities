@@ -4,14 +4,7 @@
 return function(gmod, test, eq)
     local correction = "Your encounter start was cancelled because the configured enemy health is not a number. Ask an admin to correct the configuration and restart the server."
     local empty = "No enemies could be spawned for your encounter. Ask an admin to check the server console."
-    local function upvalue(callback, wanted)
-        for i=1,100 do
-            local name, value=debug.getupvalue(callback,i)
-            if not name then break end
-            if name == wanted then return value end
-        end
-        error("missing observed upvalue " .. wanted)
-    end
+    local upvalue = dofile("tests/find-upvalue.lua")
     local function state(env, name) return upvalue(env.receivers.SendNPCInformation,name) end
     local function notices(ply, text)
         local count=0

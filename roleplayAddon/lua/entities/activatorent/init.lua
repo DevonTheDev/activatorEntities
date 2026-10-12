@@ -21,6 +21,8 @@ local eventActive = false
 -- Session-only control; timer stops for encounters/capacity are independent.
 local automaticSpawnsPaused = false
 local spawnScheduleGeneration = 0
+-- Ordinary timer reentry remains allowed; only immediate requests refuse overlap.
+local spawnAttemptDepth = 0
 local eventInterrupted = false
 local activeEventName
 local initialEnemies = 0
@@ -1320,32 +1322,36 @@ net.Receive("SendNPCInformation", function(_, ply)
     end
 end)
 
--- Spawn only the missing activators, never more than the configured cap.
-timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
-    if automaticSpawnsPaused or eventActive or player.GetCount() < returnMinNumberOfPlayers() then return end
+-- One ordinary ready-batch attempt. Keep configuration, RNG and API order shared.
+local function attemptReadyBatch(immediate)
+    if automaticSpawnsPaused then return "Immediate activator attempt blocked: automatic spawning is paused." end
+    if eventActive then return "Immediate activator attempt blocked: an encounter is active." end
+    if player.GetCount() < returnMinNumberOfPlayers() then return "Immediate activator attempt blocked: not enough players." end
     local generation = spawnScheduleGeneration
     refreshSelectedBatch()
     activatorCount = 0
     for _, ent in pairs(ents.FindByClass("activatorent")) do
         if usableActivator(ent) then activatorCount = activatorCount + 1 end
     end
-    if not hasActivatorSpawns(game.GetMap()) then return end
+    if not hasActivatorSpawns(game.GetMap()) then return "Immediate activator attempt blocked: no activator positions are available." end
     local admittedSelection = activatorCount == 0 and pendingSelection or nil
     local selectedName = selectedBatchName or (admittedSelection and admittedSelection.name)
     local identifier
     if selectedName then
-        if not selectableEvent(selectedName) then return end
+        if not selectableEvent(selectedName) then return "Immediate activator attempt blocked: the selected event is unavailable." end
         identifier = selectedName
     else identifier = determineRandomEvent() end
-    if not identifier or not returnNPCInformation(identifier) then return end
+    if not identifier or not returnNPCInformation(identifier) then return "Immediate activator attempt blocked: event information is unavailable." end
     local spawnPosition = returnActivatorSpawns(game.GetMap())
-    if not spawnPosition then return end
+    if not spawnPosition then return "Immediate activator attempt blocked: no position was sampled." end
 
     local maximum = returnMaxActivators() or 1
-    if not finiteStatusNumber(maximum) then return end
+    if not finiteStatusNumber(maximum) then return "Immediate activator attempt blocked: configured capacity is invalid." end
     for i = activatorCount + 1, maximum do
         -- A previous Spawn callback may have made the next sample unavailable.
-        if automaticSpawnsPaused or generation ~= spawnScheduleGeneration then return end
+        if automaticSpawnsPaused or generation ~= spawnScheduleGeneration or (immediate and eventActive) then
+            return "Immediate activator attempt interrupted by a spawn control or encounter change; actors may remain. No retry was scheduled."
+        end
         if not spawnPosition then break end
         local activator = ents.Create("activatorent")
         if IsValid(activator) then
@@ -1360,16 +1366,67 @@ timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
             end
             -- Finish ownership for the admitted actor, then retire a paused or
             -- superseded attempt before further RNG, admissions or timer.Stop.
-            if automaticSpawnsPaused or generation ~= spawnScheduleGeneration then return end
+            if automaticSpawnsPaused or generation ~= spawnScheduleGeneration or (immediate and eventActive) then
+                return "Immediate activator attempt interrupted by a spawn control or encounter change; actors may remain. No retry was scheduled."
+            end
             spawnPosition = returnActivatorSpawns(game.GetMap())
         end
     end
-    if automaticSpawnsPaused or generation ~= spawnScheduleGeneration then return end
+    if automaticSpawnsPaused or generation ~= spawnScheduleGeneration or (immediate and eventActive) then
+        return "Immediate activator attempt interrupted by a spawn control or encounter change; actors may remain. No retry was scheduled."
+    end
     activatorCount = 0
     for _, ent in pairs(ents.FindByClass("activatorent")) do
         if usableActivator(ent) then activatorCount = activatorCount + 1 end
     end
+    local observedCount = activatorCount
     if activatorCount >= maximum and activatorCount > 0 then timer.Stop("activatorSpawner") end
+    if immediate then
+        return "Immediate activator attempt finished. Ready activators: " .. observedCount .. " / " .. maximum .. ". No retry was scheduled."
+    end
+end
+
+-- Claim before the ready scan, and release before either feedback or rethrow.
+local function runSpawnAttempt(immediate)
+    spawnAttemptDepth = spawnAttemptDepth + 1
+    local ok, result = pcall(function()
+        if immediate then
+            if automaticSpawnsPaused then return "Immediate activator spawn refused: automatic spawning is paused." end
+            if eventActive then return "Immediate activator spawn refused: an encounter is active." end
+            for _, ent in pairs(ents.FindByClass("activatorent")) do
+                if usableActivator(ent) then return "Immediate activator spawn refused: a ready activator already exists (including manual actors)." end
+            end
+        end
+        return attemptReadyBatch(immediate)
+    end)
+    spawnAttemptDepth = spawnAttemptDepth - 1
+    return ok, result
+end
+
+-- Spawn only the missing activators, never more than the configured cap.
+timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
+    local ok, result = runSpawnAttempt(false)
+    if not ok then error(result, 0) end
+end)
+
+hook.Add("PlayerSay", "spawnReadyActivatorsNow", function(ply, text)
+    if type(text) ~= "string" or text:match("^(!%S+)") ~= "!spawnActivatorsNow" then return end
+    if not IsValid(ply) or not ply:IsPlayer() then return end
+    local failure = "Immediate activator attempt stopped with an error; actors may remain and the pending choice may have changed. No retry was scheduled."
+    local ok, message = pcall(function()
+        if not ply:IsAdmin() then return "Only admins can spawn activators now." end
+        if text ~= "!spawnActivatorsNow" then return "Usage: !spawnActivatorsNow" end
+        if spawnAttemptDepth > 0 then return "Immediate activator spawn refused: another spawn attempt is in flight." end
+        local succeeded, result = runSpawnAttempt(true)
+        if not succeeded then return failure end
+        return result
+    end)
+    -- Native reply callbacks can reenter, throw or disconnect. All state work
+    -- has finished; never serialize an arbitrary error or write after feedback.
+    pcall(function()
+        if IsValid(ply) and ply:IsPlayer() then adminLine(ply, ok and message or failure) end
+    end)
+    return ""
 end)
 
 hook.Add("OnNPCKilled", "checkForOurEntities", function(npc, attacker)

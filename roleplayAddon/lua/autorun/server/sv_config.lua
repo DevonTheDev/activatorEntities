@@ -605,7 +605,7 @@ local activatorHelp = {
         "spawns - inspect and edit saved spawn bases",
         "enemies - inspect or remove tracked encounter enemies",
         "markers - temporary private position snapshots",
-        "control - status, pause/resume, stop and refresh",
+        "control - status, pause/resume, stop, refresh and spawn now",
         "All listed commands require admin. Help changes nothing and never renews a page or ref.",
     },
     ["events"] = {
@@ -663,6 +663,8 @@ local activatorHelp = {
         "!stopEvent - remove current encounter enemies; restart the normal delay unless paused.",
         "!refreshActivators - retire ready addon actors, including manual ones; refused during an active encounter.",
         "Stop/refresh preserve the pending choice. Refresh restarts the normal delay unless paused.",
+        "!spawnActivatorsNow - one ordinary ready-batch attempt now; refused while paused, fighting, spawning or any ready actor exists.",
+        "Spawn now keeps player/position/event/capacity checks, may consume the queued choice, and never schedules a retry.",
         "These control commands take no extra arguments. A fresh session starts with automatic spawning enabled.",
     },
 }

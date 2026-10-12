@@ -17,14 +17,7 @@ return function(gmod, test, eq)
         queue(env,admin,"Raid"); env.fireTimer("activatorSpawner")
         return env.ents.FindByClass("activatorent")
     end
-    local function private(callback,wanted)
-        for i=1,100 do
-            local name,value=debug.getupvalue(callback,i)
-            if not name then break end
-            if name == wanted then return value end
-        end
-        error("missing private state: " .. wanted)
-    end
+    local private = dofile("tests/find-upvalue.lua")
     local function pending(env) return private(env.timers.activatorSpawner.callback,"pendingSelection") end
     local function pinned(env) return private(env.timers.activatorSpawner.callback,"selectedBatchName") end
     local function open(env,ply,ent)
