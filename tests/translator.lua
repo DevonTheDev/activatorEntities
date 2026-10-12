@@ -28,8 +28,8 @@ local cases = {
     {"long comment equals", "!--[===[ ! != // \" ]] ]=]\n]===]!x", "not --[===[ ! != // \" ]] ]=]\n]===]not x"},
     {"adjacent comments", "--[[]]--[=[!]=]!x", "--[[]]--[=[!]=]not x"},
     {"nested-looking comment", "a--[=[--[[ ! ]]==]!]=]!x", "a--[=[--[[ ! ]]==]!]=]not x"},
-    {"unclosed comment", "--[[!x", nil, "tests/gmod.lua:18: unclosed comment"},
-    {"mismatched close", "!a --[===[!x]==]", nil, "tests/gmod.lua:18: unclosed comment"},
+    {"unclosed comment", "--[[!x", nil, "unclosed comment"},
+    {"mismatched close", "!a --[===[!x]==]", nil, "unclosed comment"},
     {"partial opener", "--[==x\n!x", "--[==x\nnot x"},
     {"comment at offset", "  x --[=[! !=]=]!y", "  x --[=[! !=]=]not y"},
     {"unsupported long string", "local x = [[! != // text\n]]; !x", "local x = [[not  ~= -- text\n]]; not x"},
@@ -47,7 +47,11 @@ local ok, message = pcall(function()
         write(case[2])
         local translated, result = pcall(source, temporary)
         eq(translated, case[4] == nil, case[1] .. " outcome")
-        eq(result, case[4] or case[3], case[1] .. " exact bytes/error")
+        if case[4] then
+            assert(tostring(result):match("^tests/gmod%.lua:%d+: " .. case[4] .. "$"), result)
+        else
+            eq(result, case[3], case[1] .. " exact bytes/error")
+        end
         passed = passed + 1
     end
 

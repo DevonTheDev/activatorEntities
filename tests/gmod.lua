@@ -2,12 +2,21 @@
 local M = {}
 local root = "roleplayAddon/lua/"
 
+-- FIFO translation content cache. The byte cap covers retained source and
+-- translated string payloads, not Lua table overhead or temporary allocations.
+-- Files are still read every time, and includes still compile fresh chunks.
+local translations, translationBytes = {}, 0
+local maxTranslations, maxTranslationBytes = 8, 1024 * 1024
+
 -- Translate only GLua operators/comments, preserving quoted strings and long
 -- comments. This lets stock Lua execute the actual addon rather than a copy.
 function M.source(path)
     local file = assert(io.open(path, "r"))
     local source = file:read("*a")
     file:close()
+    for _, entry in ipairs(translations) do
+        if entry.path == path and entry.source == source then return entry.translated end
+    end
     local out, i = {}, 1
     while i <= #source do
         local prefix = source:sub(i, i + 1)
@@ -40,7 +49,18 @@ function M.source(path)
             out[#out + 1], i = quote, i + 1
         end
     end
-    return table.concat(out)
+    local translated = table.concat(out)
+    local bytes = #source + #translated
+    -- A failure above or a payload too large to retain leaves the cache intact.
+    if bytes <= maxTranslationBytes then
+        while #translations >= maxTranslations or translationBytes + bytes > maxTranslationBytes do
+            local oldest = table.remove(translations, 1)
+            translationBytes = translationBytes - oldest.bytes
+        end
+        translations[#translations + 1] = {path=path, source=source, translated=translated, bytes=bytes}
+        translationBytes = translationBytes + bytes
+    end
+    return translated
 end
 
 function M.new(client)
