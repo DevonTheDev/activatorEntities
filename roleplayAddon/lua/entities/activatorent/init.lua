@@ -1286,7 +1286,21 @@ net.Receive("SendNPCInformation", function(_, ply)
             enemy:Spawn()
             if not ownsConstruction(enemies, enemy) then return end
             if IsValid(enemy) and not enemy:IsMarkedForDeletion() then
-                local health = returnEnemyHealth()
+                local healthOK, health = pcall(returnEnemyHealth)
+                if not healthOK then
+                    -- Only retire this captured construction. Getter callbacks may
+                    -- already have installed another event or selected ready batch.
+                    if eventActive and activeEnemies == enemies and constructingEnemies == enemies then
+                        pcall(finishEvent, false)
+                    end
+                    -- Secondary callback errors must not mask the lookup error or
+                    -- prevent independent cleanup attempts. Removal is best effort.
+                    for admitted in pairs(enemies) do
+                        pcall(function() if IsValid(admitted) then admitted:Remove() end end)
+                    end
+                    pcall(function() if IsValid(enemy) then enemy:Remove() end end)
+                    error(health, 0)
+                end
                 if not ownsConstruction(enemies, enemy) then return end
                 if type(health) ~= "number" then
                     stopActivatorEvent()

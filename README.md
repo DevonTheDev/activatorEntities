@@ -59,10 +59,31 @@ or replaced the event takes precedence and gets no additional correction.
 The [documented SetHealth argument](https://wiki.facepunch.com/gmod/Entity:SetHealth)
 is `number newHealth`. All numeric samples, including zero, negatives, fractions,
 NaN and infinities, still reach the setter unchanged. This check adds no finite,
-positive, integer or range policy and does not catch getter/setter exceptions.
+positive, integer or range policy. Setter exceptions remain outside this check.
 Local API doubles establish admission and call order, not native health behavior,
 rounding, death, hook timing or chat delivery; verify those on a disposable GMod
 server. No native failure on an invalid health type is claimed.
+
+If a custom `returnEnemyHealth()` throws, Start makes a best-effort recovery
+before rethrowing the original Lua error object unchanged. It retires the captured
+construction only while that construction still owns the encounter, clears its
+counts and inspection state, and requests removal of its admitted enemies and
+current unadmitted NPC independently. Secondary retirement or removal callback
+errors cannot replace the original error or prevent the other removal attempts;
+a failed removal request can leave an NPC behind. No cleanup-success diagnostic,
+non-number correction, empty-start notice, victory or automatic retry is added.
+
+Retirement restarts the ordinary delay only when automatic spawning is enabled,
+before cleanup callbacks run. A replacement encounter, selected ready batch,
+queued future choice, or pause/resume decision made by getter or removal callbacks
+keeps its ownership; the old recovery path writes no timer decision after cleanup.
+A previously removed ready activator's deferred `EntityRemoved` callback retains
+its existing behavior and can still restart an enabled idle timer. This recovery
+does not change that separate ready-actor hook.
+A later ordinary batch and fresh Use/Start can recover after configuration repair.
+This is conditional robustness for a custom throwing getter: the shipped getter
+only returns the configured value. It does not supervise other construction APIs
+or promise cleanup after every native engine failure.
 
 Admin chat commands:
 
@@ -996,6 +1017,12 @@ hostile-table cases cannot serialize values. Numeric pass-through controls inclu
 NaN/infinities; failed Create and Spawn self-removal retain eligible sampling order.
 The deliberately strict mock setter raises a labeled test error on a non-number;
 that is controlled mock behavior, not observed native SetHealth behavior.
+Health-lookup recovery adds 36 controlled callback cases for first/second throws,
+immediate/deferred removal, enabled/paused schedules, getter cancellation and
+replacement, cleanup replacement and schedule changes, original error payloads,
+and secondary status/removal callback errors. They assert consumed replay,
+independent cleanup attempts, no stale result, queued-choice preservation and
+fresh Use/Start recovery. These are Lua/API-double checks, not native GMod results.
 Encounter-selection tests cover administrator permissions, exact and duplicate
 names, pending replacement/clear, partial and failed spawning, selected-batch
 refills, manual actors, deferred removal and current/future ownership. They also
