@@ -69,6 +69,7 @@ Admin chat commands:
 - `!setActivatorSpawn` / `!setEnemySpawn`: add your current position for this map
 - `!removeActivatorSpawn` / `!removeEnemySpawn`: remove the last position
 - `!listSpawns enemy|activator [page]`: privately inspect this map's configured positions
+- `!nearSpawns enemy|activator [page]`: privately inspect configured bases nearest to a living admin
 - `!markSpawn enemy|activator <key>`: privately mark one freshly inspected stored base for 15 seconds
 - `!clearSpawnMarker`: privately clear your temporary spawn snapshot
 - `!removeEnemySpawn <key>` / `!removeActivatorSpawn <key>`: remove one freshly inspected position
@@ -104,6 +105,46 @@ base, in Source world units. The whole page uses one position snapshot taken
 at list time. Walk and list the same page again to see distances change. An
 unusable player position or an unrepresentable distance shows `distance unavailable`;
 the coordinates and ordinary inspection/edit permissions remain usable.
+
+Use `!nearSpawns enemy` (or `!nearSpawns activator [page]`) to sort the configured
+bases by approximate 3D distance from one finite snapshot of your current server
+position. Finite numeric distances sort before pagination, with the original
+numeric stored key breaking exact distance ties. Unrepresentable distances appear
+last as `distance unavailable`, tied by stored key; those valid bases still have
+normal exact-key edit and marker permission. Sorting uses the numeric distance,
+so rows with the same rounded distance text can have different order. Each page
+holds at most eight rows and two framing lines, all at most 255 bytes.
+
+Every nearby page request is fresh: walking between requests can change which
+bases appear on each page. Copy the exact shown stored key into `!markSpawn`,
+`!moveEnemySpawn` / `!moveActivatorSpawn`, or the matching indexed remove command.
+A row's rank, page number or live enemy index is never an edit alias. This
+configured-base catalogue is separate from `!nearEventEnemies`, which lists live
+tracked enemies. Viewing neither samples nor changes spawn configuration, saved
+data, actors, RNG, dialogue, timers or marker packets.
+
+Nearby viewing requires a living admin and one usable finite position, including
+for an empty list. A dead admin or an unavailable position receives no nearby
+page; retry or use `!listSpawns`, which still allows dead admins and shows exact
+key-ordered rows with unavailable distances when it cannot capture an origin.
+Both catalogues retain the existing actor rejection boundary: invalid/nonplayer
+and nonadmin requests keep a prior configured page, while an admitted invalid
+request clears it. An accepted nearby page has the same edit/marker permissions
+as an ordinary page, with no time or death expiry and no requirement to stay near
+the base. Accepted edits invalidate affected map/kind pages even if saving fails;
+existing shown-coordinate, raw map-record/list identity and lifecycle checks
+still apply. An already sent marker remains a historical snapshot.
+
+Both configured catalogues now share pending request identity. A nested newer
+ordinary/nearby attempt, accepted scoped edit, disconnect or initialization can
+retire an older capture before it installs a page. Nearby publication additionally
+rechecks the complete captured key/coordinate set, list identity, current map and
+living-admin admission. This tightens a prior ordinary-list callback edge where
+an older capture could overwrite a newer page before replies began. Pages remain
+installed before the first reply, with no acknowledgement or later permission
+write: nested reply actions retain their resulting authority even if frozen
+outer output continues. These bounded checks cover the tested callback and
+lifecycle transitions, not arbitrary hostile native getters or hot-reload safety.
 
 These are distances to configured bases, not live NPC locations or a prediction
 of which base a later spawn will sample. Activators use their stored position as
@@ -201,6 +242,10 @@ list from different locations, move and relist, and verify each sees only their
 own updated base distances with the same keys and coordinates. Include vertical
 separation and verify readable private chat rows and the cumulative enemy
 placement offset described above.
+Also compare ordinary and nearby ordering, including ties and page changes after walking;
+copy literal nearby keys into move/remove/mark and check stale pages with two admins.
+Native nearby privacy, Vector precision, chat rendering, deployed hook interactions,
+placement, navigation and clearance remain unverified by the API-double tests.
 
 ### Apply changes to a fresh ready batch
 

@@ -194,6 +194,11 @@ local function validPositionList(positions)
 end
 
 local spawnInspections = {}
+-- Ownership covers pending configured-catalogue capture, not a new edit grant.
+local spawnCatalogueRequests = {}
+local function currentSpawnCatalogue(sender, request)
+    return rawequal(spawnCatalogueRequests[sender], request)
+end
 local spawnMarkerOperations = {}
 util.AddNetworkString("ActivatorSpawnMarker")
 -- Both snapshot kinds occupy one client slot and share only operation/transport.
@@ -288,6 +293,9 @@ function hasActivatorSpawns(mapName)
 end
 
 local function invalidateSpawnInspections(map, kind)
+    for admin, request in pairs(spawnCatalogueRequests) do
+        if request.map == map and request.kind == kind then spawnCatalogueRequests[admin] = nil end
+    end
     for admin, inspection in pairs(spawnInspections) do
         if inspection.map == map and inspection.kind == kind then
             spawnInspections[admin], spawnMarkerOperations[admin] = nil, nil
@@ -306,43 +314,59 @@ local function spawnListOrigin(sender)
     if ok then return x, y, z end
 end
 
-local function spawnBaseDistance(position, x, y, z)
-    if x == nil then return "distance unavailable" end
+local function spawnDistance(px, py, pz, x, y, z)
+    if x == nil then return end
     -- Use floating subtraction and a scaled norm, avoiding integer wrap and
     -- intermediate square overflow when the final distance is representable.
-    local dx, dy, dz = position.x * 1.0 - x, position.y * 1.0 - y, position.z * 1.0 - z
-    if not finiteNumber(dx) or not finiteNumber(dy) or not finiteNumber(dz) then return "distance unavailable" end
+    local dx, dy, dz = px * 1.0 - x, py * 1.0 - y, pz * 1.0 - z
+    if not finiteNumber(dx) or not finiteNumber(dy) or not finiteNumber(dz) then return end
     local scale = math.max(math.abs(dx), math.abs(dy), math.abs(dz))
     local distance = 0
     if scale > 0 then
         dx, dy, dz = dx / scale, dy / scale, dz / scale
         distance = scale * math.sqrt(dx * dx + dy * dy + dz * dz)
     end
-    if not finiteNumber(distance) then return "distance unavailable" end
+    if finiteNumber(distance) then return distance end
+end
+
+local function spawnDistanceText(distance)
+    if distance == nil then return "distance unavailable" end
     return "~" .. string.format("%.6g", distance) .. " units away"
 end
 
-local function printSpawnList(sender, text)
+local function spawnBaseDistance(position, x, y, z)
+    if x == nil then return "distance unavailable" end
+    return spawnDistanceText(spawnDistance(position.x, position.y, position.z, x, y, z))
+end
+
+local function printSpawnList(sender, text, request)
+    if not currentSpawnCatalogue(sender, request) then return end
+    local function fail(message)
+        if currentSpawnCatalogue(sender, request) then sender:ChatPrint(message) end
+    end
     spawnInspections[sender], spawnMarkerOperations[sender] = nil, nil
     local kind, argument = text:match("^!listSpawns%s+(%S+)%s*(.-)%s*$")
     if not spawnKinds[kind] then
-        sender:ChatPrint("Usage: !listSpawns enemy|activator [page].")
+        fail("Usage: !listSpawns enemy|activator [page].")
         return
     end
     local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
     if not page or not listIndex(page) then
-        sender:ChatPrint("Usage: !listSpawns " .. kind .. " [page]; use a positive integer page.")
+        fail("Usage: !listSpawns " .. kind .. " [page]; use a positive integer page.")
         return
     end
-    local information, positions, reason = editableSpawnList(kind)
+    local mapName = game.GetMap()
+    if not currentSpawnCatalogue(sender, request) then return end
+    request.map, request.kind = mapName, kind
+    local information, positions, reason = validatedSpawnList(mapName, kind)
     if not information then
-        sender:ChatPrint("Cannot inspect spawns: " .. reason .. ".")
+        fail("Cannot inspect spawns: " .. reason .. ".")
         return
     end
     local keys = {}
     for key in pairs(positions) do
         if not spawnNumberToken(key) then
-            sender:ChatPrint("Cannot inspect spawns: a key cannot be represented exactly.")
+            fail("Cannot inspect spawns: a key cannot be represented exactly.")
             return
         end
         keys[#keys + 1] = key
@@ -350,7 +374,7 @@ local function printSpawnList(sender, text)
     table.sort(keys)
     local pages = math.max(1, math.ceil(#keys / 8))
     if page > pages then
-        sender:ChatPrint("Usage: !listSpawns " .. kind .. " [page]; page must be in 1-" .. pages .. ".")
+        fail("Usage: !listSpawns " .. kind .. " [page]; page must be in 1-" .. pages .. ".")
         return
     end
     local originX, originY, originZ = spawnListOrigin(sender)
@@ -360,19 +384,21 @@ local function printSpawnList(sender, text)
         local token = spawnNumberToken(key)
         local x, y, z = spawnNumberToken(position.x), spawnNumberToken(position.y), spawnNumberToken(position.z)
         if not token or not x or not y or not z then
-            sender:ChatPrint("Cannot inspect spawns: a value cannot be represented exactly.")
+            fail("Cannot inspect spawns: a value cannot be represented exactly.")
             return
         end
         local line = "Key " .. token .. ": x=" .. x .. ", y=" .. y .. ", z=" .. z
             .. "; " .. spawnBaseDistance(position, originX, originY, originZ)
         if #line > 255 then
-            sender:ChatPrint("Cannot inspect spawns: a position exceeds the chat line limit.")
+            fail("Cannot inspect spawns: a position exceeds the chat line limit.")
             return
         end
         lines[#lines + 1] = line
         shown[token] = {key = key, x = position.x, y = position.y, z = position.z}
     end
-    spawnInspections[sender] = {map = game.GetMap(), kind = kind, information = information,
+    mapName = game.GetMap()
+    if not currentSpawnCatalogue(sender, request) then return end
+    spawnInspections[sender] = {map = mapName, kind = kind, information = information,
         positions = positions, shown = shown}
     sender:ChatPrint("Current-map " .. kind .. " spawns, page " .. page .. "/" .. pages
         .. " (" .. #keys .. " positions" .. (#keys == 0 and "; empty list" or "") .. ")."
@@ -381,6 +407,105 @@ local function printSpawnList(sender, text)
     sender:ChatPrint("Shown key: " .. spawnKinds[kind].remove .. " <key> to remove; " .. spawnKinds[kind].move
         .. " <key> to move here. Copy the exact key; list again after any edit. Coordinates are not placement checks."
         .. (kind == "enemy" and " Enemy placement adds (30,30,0) cumulatively per valid creation." or ""))
+end
+
+-- Separate distance ordering; reuse the ordinary literal-key inspection shape.
+local function printNearestSpawns(sender, text, request)
+    if not currentSpawnCatalogue(sender, request) then return end
+    local function fail(message)
+        if currentSpawnCatalogue(sender, request) then sender:ChatPrint(message) end
+    end
+    spawnInspections[sender], spawnMarkerOperations[sender] = nil, nil
+    if not sender:Alive() then
+        fail("Cannot inspect nearby spawns: you must be alive. Use !listSpawns for stored-key order.")
+        return
+    end
+    local kind, argument = text:match("^!nearSpawns%s+(%S+)%s*(.-)%s*$")
+    if not spawnKinds[kind] then fail("Usage: !nearSpawns enemy|activator [page]."); return end
+    local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
+    if not page or not listIndex(page) then
+        fail("Usage: !nearSpawns " .. kind .. " [page]; use a positive integer page.")
+        return
+    end
+    local mapName = game.GetMap()
+    if not currentSpawnCatalogue(sender, request) then return end
+    request.map, request.kind = mapName, kind
+    local information, positions, reason = validatedSpawnList(mapName, kind)
+    if not information then fail("Cannot inspect spawns: " .. reason .. "."); return end
+    local rows, captured = {}, {}
+    for key, position in pairs(positions) do
+        local token = spawnNumberToken(key)
+        if not token then fail("Cannot inspect spawns: a key cannot be represented exactly."); return end
+        local x, y, z = position.x, position.y, position.z
+        if not finiteNumber(x) or not finiteNumber(y) or not finiteNumber(z) then
+            fail("Cannot inspect spawns: malformed " .. kind .. " list."); return
+        end
+        local row = {key = key, token = token, x = x, y = y, z = z}
+        rows[#rows + 1], captured[key] = row, row
+    end
+    local pages = math.max(1, math.ceil(#rows / 8))
+    if page > pages then
+        fail("Usage: !nearSpawns " .. kind .. " [page]; page must be in 1-" .. pages .. ".")
+        return
+    end
+    if not currentSpawnCatalogue(sender, request) then return end
+    local originX, originY, originZ = spawnListOrigin(sender)
+    if not currentSpawnCatalogue(sender, request) then return end
+    if originX == nil then
+        fail("Cannot inspect nearby spawns: your position is unavailable. Retry from a valid position or use !listSpawns.")
+        return
+    end
+    for _, row in ipairs(rows) do
+        row.distance = spawnDistance(row.x, row.y, row.z, originX, originY, originZ)
+    end
+    table.sort(rows, function(a, b)
+        if a.distance == nil and b.distance ~= nil then return false end
+        if b.distance == nil and a.distance ~= nil then return true end
+        if a.distance ~= b.distance then return a.distance < b.distance end
+        return a.key < b.key
+    end)
+    local shown, lines = {}, {}
+    for i = (page - 1) * 8 + 1, math.min(page * 8, #rows) do
+        local row = rows[i]
+        local x, y, z = spawnNumberToken(row.x), spawnNumberToken(row.y), spawnNumberToken(row.z)
+        if not x or not y or not z then
+            fail("Cannot inspect spawns: a value cannot be represented exactly."); return
+        end
+        local line = "Key " .. row.token .. ": x=" .. x .. ", y=" .. y .. ", z=" .. z
+            .. "; " .. spawnDistanceText(row.distance)
+        if #line > 255 then fail("Cannot inspect spawns: a position exceeds the chat line limit."); return end
+        lines[#lines + 1] = line
+        shown[row.token] = {key = row.key, x = row.x, y = row.y, z = row.z}
+    end
+    local header = "Nearest current-map " .. kind .. " stored bases, page " .. page .. "/" .. pages
+        .. " (" .. #rows .. " positions" .. (#rows == 0 and "; empty list" or "") .. ")."
+        .. " Approx. 3D Source units from you; distance unavailable last; each page is a fresh snapshot."
+    local footer = "Shown key: " .. spawnKinds[kind].remove .. " <key> to remove; " .. spawnKinds[kind].move
+        .. " <key> to move here. Copy the exact key; list again after any edit. Coordinates are not placement checks."
+        .. (kind == "enemy" and " Enemy placement adds (30,30,0) cumulatively per valid creation." or "")
+    if #header > 255 or #footer > 255 then fail("Cannot inspect spawns: a reply exceeds the chat line limit."); return end
+    if not currentSpawnCatalogue(sender, request) then return end
+    if not IsValid(sender) or not sender:IsPlayer() or not sender:IsAdmin() or not sender:Alive()
+        or game.GetMap() ~= mapName then return end
+    if not currentSpawnCatalogue(sender, request) then return end
+    local currentInformation, currentPositions = validatedSpawnList(mapName, kind)
+    local same = rawequal(information, currentInformation) and rawequal(positions, currentPositions)
+    local count = 0
+    if same then
+        for key, position in pairs(currentPositions) do
+            count = count + 1
+            local row = captured[key]
+            if not row or position.x ~= row.x or position.y ~= row.y or position.z ~= row.z then same = false; break end
+        end
+    end
+    if not currentSpawnCatalogue(sender, request) then return end
+    if not same or count ~= #rows then fail("Cannot inspect spawns: configuration changed; list again."); return end
+    -- Install once before feedback. Reentrant replies never restore this grant.
+    spawnInspections[sender] = {map = mapName, kind = kind, information = information,
+        positions = positions, shown = shown}
+    sender:ChatPrint(header)
+    for _, line in ipairs(lines) do sender:ChatPrint(line) end
+    sender:ChatPrint(footer)
 end
 
 local function inspectedSpawnTarget(sender, kind, token, mapName)
@@ -460,7 +585,7 @@ local function copySpawnDestination(sender, previous)
 end
 
 hook.Add("PlayerDisconnected", "clearSpawnInspection", function(sender)
-    spawnInspections[sender], spawnMarkerOperations[sender] = nil, nil
+    spawnInspections[sender], spawnMarkerOperations[sender], spawnCatalogueRequests[sender] = nil, nil, nil
 end)
 
 -- The save routine is assigned below before any chat command can run.
@@ -482,7 +607,22 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
         sendSpawnMarker(sender, text, name == "!clearSpawnMarker")
         return ""
     end
-    if name == "!listSpawns" and sender ~= nil then spawnMarkerOperations[sender] = nil end
+    if name == "!listSpawns" or name == "!nearSpawns" then
+        if sender == nil then return "" end
+        local request = {}
+        spawnCatalogueRequests[sender], spawnMarkerOperations[sender] = request, nil
+        -- Native admission/position/reply errors must not leak exception text.
+        pcall(function()
+            if not IsValid(sender) or not sender:IsPlayer() then return end
+            if not sender:IsAdmin() then
+                if currentSpawnCatalogue(sender, request) then sender:ChatPrint("Only admins can inspect or edit spawn positions.") end
+                return
+            end
+            if name == "!nearSpawns" then printNearestSpawns(sender, text, request)
+            else printSpawnList(sender, text, request) end
+        end)
+        return ""
+    end
     if name == "!saveSpawns" then
         if not IsValid(sender) or not sender:IsPlayer() then return "" end
         if not sender:IsAdmin() then
@@ -501,14 +641,10 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     local moving = name == "!moveEnemySpawn" and "enemy" or (name == "!moveActivatorSpawn" and "activator")
     local kind = moving or (name == "!removeEnemySpawn" and "enemy" or (name == "!removeActivatorSpawn" and "activator"))
     local indexed = kind and (moving or text ~= name)
-    if name == "!listSpawns" or indexed then
+    if indexed then
         if not IsValid(sender) or not sender:IsPlayer() then return "" end
         if not sender:IsAdmin() then
             sender:ChatPrint("Only admins can inspect or edit spawn positions.")
-            return ""
-        end
-        if name == "!listSpawns" then
-            printSpawnList(sender, text)
             return ""
         end
         local token = text:match("^!%S+%s+(%S+)%s*$")
@@ -692,7 +828,7 @@ hook.Add("ShutDown", "saveTheTables", function()
 end)
 
 hook.Add("Initialize", "loadTheTables", function()
-    spawnInspections, spawnMarkerOperations = {}, {}
+    spawnInspections, spawnMarkerOperations, spawnCatalogueRequests = {}, {}, {}
     canSaveSpawnPositions = false
     lastGoodSpawnBytes, preparedSpawnBackupBytes = nil, nil
     local read, JSONData, filename = pcall(readSpawnData)
