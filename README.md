@@ -372,6 +372,14 @@ reported without changing it; sparse position lists are counted normally.
 Enemy positions are shown separately because they are needed when a player
 starts an encounter, not when the timed spawner creates its activators.
 
+Automatic attempts skip creation when the effective `maxActivators` is a
+nonnumeric value, NaN or infinity. The existing one-actor fallback for nil/false
+and `multipleEntities ~= true` remains; finite negative, zero and fractional
+values keep their existing behavior. Rejection leaves the pending choice,
+ready actors, interaction grants and timer state intact. Event and initial
+position sampling still occur before this capacity check. Correct invalid
+configuration and restart the server as usual.
+
 These are current configuration checks, not a countdown or a guarantee that
 an NPC will spawn. An encounter definition can be present while its model or
 NPC class is unusable in the engine. The status command does not consume the
@@ -917,6 +925,11 @@ side effects. They preserve the ordinary manual-removal timer restart and paused
 behavior, sparse random sampling, one-draw rejection, valid explicit choices beside
 bad records and first-match duplicate lookup. Table-shaped information remains
 accepted without claiming its fields are engine-valid.
+Capacity-admission tests bound the unguarded infinity reproduction with a
+fourth-attempt sentinel and check malformed rejection, fallback/finite controls,
+pending recovery, surviving ready actors and Use grants, and direct due callbacks
+with stopped, paused and active-encounter schedules. These are real addon
+callbacks under API doubles, not native engine scheduling or creation evidence.
 Count-admission tests exercise NaN through actual selected-batch timer, Use and
 Start callbacks with capped, running and paused timers. They check retained ready
 state, consumed replay, fresh-Use retry after a controlled table repair, normal

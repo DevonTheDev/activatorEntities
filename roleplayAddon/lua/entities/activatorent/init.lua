@@ -1342,6 +1342,7 @@ timer.Create("activatorSpawner", returnDelayBetweenEvents(), 0, function()
     if not spawnPosition then return end
 
     local maximum = returnMaxActivators() or 1
+    if not finiteStatusNumber(maximum) then return end
     for i = activatorCount + 1, maximum do
         -- A previous Spawn callback may have made the next sample unavailable.
         if automaticSpawnsPaused or generation ~= spawnScheduleGeneration then return end
