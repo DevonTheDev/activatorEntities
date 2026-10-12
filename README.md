@@ -66,6 +66,7 @@ server. No native failure on an invalid health type is claimed.
 
 Admin chat commands:
 
+- `!activatorHelp [events|spawns|enemies|markers|control]`: privately read command help
 - `!setActivatorSpawn` / `!setEnemySpawn`: add your current position for this map
 - `!removeActivatorSpawn` / `!removeEnemySpawn`: remove the last position
 - `!listSpawns enemy|activator [page]`: privately inspect this map's configured positions
@@ -94,6 +95,23 @@ Admin chat commands:
 Accepted spawn additions, removals and moves attempt a verified save immediately
 to the DATA directory; clean shutdown also checks the latest state. Positions load on initialization.
 Back up the existing spawn data before testing changes.
+
+### Find a command in game
+
+Use `!activatorHelp` for the topic index, then, for example,
+`!activatorHelp spawns` for the exact commands and their main cautions. Topics
+are the literal lowercase words `events`, `spawns`, `enemies`, `markers` and
+`control`. Use one ASCII space before the topic, with no trailing spaces or
+extra arguments. Unknown or malformed arguments receive fixed private usage
+help; input is never echoed. Dead admins can also read help; nonadmins receive
+one private denial.
+
+Each response is fixed text with at most ten lines of 240 bytes each, sent only
+to the requester. Help does not inspect current configuration, run another
+command, change a selection or marker, or consume, replace or renew any inspected
+page/reference. Existing command syntax, replies and permissions are unchanged.
+The command needs an updated server; native delivery through the deployed chat
+addon still requires an in-game check.
 
 ### Correct one spawn point
 

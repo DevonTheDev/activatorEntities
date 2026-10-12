@@ -597,10 +597,101 @@ local function confirmSpawnEdit(sender, message)
     sender:ChatPrint(message)
 end
 
+-- Literal help never reads configuration or changes inspection/marker authority.
+local activatorHelp = {
+    [""] = {
+        "Activator admin help (private): !activatorHelp <topic>",
+        "events - browse, inspect and choose configured encounters",
+        "spawns - inspect and edit saved spawn bases",
+        "enemies - inspect or remove tracked encounter enemies",
+        "markers - temporary private position snapshots",
+        "control - status, pause/resume, stop and refresh",
+        "All listed commands require admin. Help changes nothing and never renews a page or ref.",
+    },
+    ["events"] = {
+        "Activator help: events (admin commands).",
+        "!listEvents [page] - browse configured encounter names and eligible refs.",
+        "!findEvents <page> <text> - literal name search; positive page: 1-6 digits; text: 1-128 bytes, no edge spaces or controls; use single separators.",
+        "!nextEvent <exact name> - queue a case-sensitive name. Bare !nextEvent shows configured-name help.",
+        "!inspectEventRef <ref> - inspect configured model, enemy class and requested count.",
+        "!nextEventRef <ref> - queue the exact eligible entry from your current list/search page.",
+        "!clearNextEvent - clear the pending future choice.",
+        "Refs: your latest successful list/search page, 60s, one selection. New successful pages replace refs; inspect/help never renew them.",
+        "Queue/clear affects only the future fresh automatic batch; it preserves ready actors and the active encounter.",
+        "Eligible means selectable configuration; models and NPC classes remain engine unchecked.",
+    },
+    ["spawns"] = {
+        "Activator help: spawns (admin commands).",
+        "!listSpawns enemy|activator [page] / !nearSpawns enemy|activator [page] - inspect this map's configured bases.",
+        "!setEnemySpawn / !setActivatorSpawn - add your current position.",
+        "!moveEnemySpawn <key> / !moveActivatorSpawn <key> - move one inspected base to your current position.",
+        "!removeEnemySpawn [key] / !removeActivatorSpawn [key] - remove one base; omitting the key removes the highest stored key.",
+        "Indexed edits require a current inspected page. Copy shown stored keys, never row ranks or enemy indices.",
+        "New pages, accepted edits or lifecycle/identity changes can invalidate permission. Configured pages have no timed or death expiry.",
+        "!nearSpawns requires a living admin; !listSpawns also works when dead.",
+        "Accepted edits attempt saving immediately; failure can leave changes in memory.",
+        "!saveSpawns - retry verified saving of accepted positions for every map.",
+    },
+    ["enemies"] = {
+        "Activator help: enemies (admin commands).",
+        "!listEventEnemies [page] - inspect tracked enemies in the active encounter.",
+        "!nearEventEnemies [page] - list nearest first; requires a living admin with a usable position.",
+        "!inspectEventEnemy <index> - observe Health() and GetMaxHealth() on an eligible page; also works when dead.",
+        "!removeEventEnemy <index> - request removal of one owned enemy from your inspected page.",
+        "Copy an exact unique shown index, never a rank or stored spawn key. Indices are temporary and never authorize a replacement entity.",
+        "New listing attempts invalidate health/marker permission. Removal keeps its existing latest-successful-page rules.",
+        "Accepted removal consumes your page and interrupts the encounter, preventing its ordinary victory notice.",
+        "Enemy pages have no timed expiry; lifecycle and target changes can still invalidate them. List again when refused.",
+        "Observed health is not a promised configured maximum. Removal requests may complete later.",
+    },
+    ["markers"] = {
+        "Activator help: markers (admin commands).",
+        "!markSpawn enemy|activator <key> - mark one inspected configured base.",
+        "!markEventEnemy <index> - mark one inspected remaining enemy's position at mark time.",
+        "!clearSpawnMarker / !clearEventEnemyMarker - clear the same shared snapshot slot.",
+        "Marking requires a living admin and an eligible inspected target. Clearing also works when dead.",
+        "One private HUD slot; each accepted mark replaces it and lasts at most 15 seconds.",
+        "Marks are historical position snapshots, not tracking, navigation, visibility or reachability guarantees.",
+        "An enemy spawn-base mark shows the configured base before enemy placement offsets.",
+        "Marking, clearing and help do not consume or renew the page used for edit/removal authority.",
+    },
+    ["control"] = {
+        "Activator help: control (admin commands).",
+        "!eventStatus - inspect automatic spawning, the active encounter, ready actors, pending choice and current spawn conditions.",
+        "!pauseActivatorSpawns - pause new automatic batches for this session; ready actors and active fights remain usable.",
+        "!resumeActivatorSpawns - resume with the full normal delay, or start that delay after the active fight; never spawn immediately.",
+        "!stopEvent - remove current encounter enemies; restart the normal delay unless paused.",
+        "!refreshActivators - retire ready addon actors, including manual ones; refused during an active encounter.",
+        "Stop/refresh preserve the pending choice. Refresh restarts the normal delay unless paused.",
+        "These control commands take no extra arguments. A fresh session starts with automatic spawning enabled.",
+    },
+}
+
 -- Function that allows admins to modify spawn positions in game.
 hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if type(text) ~= "string" then return end
     local name = text:match("^(!%S+)")
+    if name == "!activatorHelp" then
+        -- Even rejected input and native reply failures remain requester-private.
+        pcall(function()
+            if not IsValid(sender) or not sender:IsPlayer() then return end
+            if not sender:IsAdmin() then
+                sender:ChatPrint("Only admins can use Activator command help.")
+                return
+            end
+            local lines = text == name and activatorHelp[""]
+            if not lines and #text <= 22 then
+                local topic = text:match("^!activatorHelp ([a-z]+)$")
+                lines = topic and activatorHelp[topic]
+            end
+            if not lines then
+                sender:ChatPrint("Usage: !activatorHelp [events|spawns|enemies|markers|control]; use one lowercase topic and single spaces, with no extra arguments.")
+                return
+            end
+            for _, line in ipairs(lines) do sender:ChatPrint(line) end
+        end)
+        return ""
+    end
     -- Encounter commands claim their own capture/operation before any guards.
     if name == "!inspectEventEnemy" or name == "!markEventEnemy" or name == "!clearEventEnemyMarker" or name == "!listEventEnemies" or name == "!nearEventEnemies" then return end
     if name == "!markSpawn" or name == "!clearSpawnMarker" then
