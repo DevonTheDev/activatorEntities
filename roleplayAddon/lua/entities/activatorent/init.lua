@@ -26,6 +26,7 @@ local activeEventName
 local initialEnemies = 0
 local statusRequestAfter = {}
 local enemyInspections = {}
+local enemyHealthRequests = {}
 local enemyRemovalRequests = {}
 local enemyMarkerCaptures = {}
 local enemyMarkerGrants = {}
@@ -761,6 +762,14 @@ local function printEventEnemies(ply, text, capture, nearest)
         enemyMarkerGrants[ply] = {capture = capture, inspection = inspection, map = markerMap}
     end
     for _, reply in ipairs(replies) do ply:ChatPrint(reply) end
+    -- Health inspection alone requires the complete server reply sequence. This
+    -- does not acknowledge client delivery or delay existing marker/removal grants.
+    local grant = enemyMarkerGrants[ply]
+    if grant and rawequal(grant.inspection, inspection) and rawequal(grant.capture, capture)
+        and rawequal(enemyMarkerCaptures[ply], capture) and rawequal(enemyInspections[ply], inspection)
+        and rawequal(activeEnemies, owners) and eventActive and not constructingEnemies then
+        inspection.healthReplyComplete = true
+    end
 end
 
 -- Captured object and page identity are checked after callback-capable reads.
@@ -823,6 +832,76 @@ local function sendEventEnemyMarker(ply, text, clear)
     if ActivatorSnapshotMarker.Retire(ply, operation) and ok and message then
         pcall(adminLine, ply, message)
     end
+end
+
+-- Observe the exact listed object; this command neither claims marker authority
+-- nor consumes/renews a page. Every callback boundary keeps its own request token.
+local function inspectEventEnemy(ply, text)
+    if ply == nil then return end
+    local request = {}
+    enemyHealthRequests[ply] = request
+    local grant = enemyMarkerGrants[ply]
+    local capture = grant and grant.capture
+    local inspection = grant and grant.inspection
+    local owners = inspection and inspection.owners
+    local token = text:match("^!inspectEventEnemy%s+(%S+)%s*$")
+    local enemy = inspection and token and inspection.targets[token]
+    local function current() return rawequal(enemyHealthRequests[ply], request) end
+    local function owned()
+        return current() and grant and rawequal(enemyMarkerGrants[ply], grant)
+            and rawequal(enemyMarkerCaptures[ply], capture) and capture.stable
+            and rawequal(enemyInspections[ply], inspection) and inspection.healthReplyComplete
+            and rawequal(activeEnemies, owners) and eventActive and not constructingEnemies
+            and enemy and owners[enemy] and rawequal(inspection.targets[token], enemy)
+            and not enemyRemovalRequests[enemy]
+    end
+    local function targetCurrent()
+        if not owned() or not IsValid(enemy) or enemy:IsMarkedForDeletion() then return false end
+        local _, index = enemyLocationIndex(enemy)
+        if index ~= token or not IsValid(enemy) or enemy:IsMarkedForDeletion() or not owned() then return false end
+        local _, finalIndex = enemyLocationIndex(enemy)
+        return finalIndex == token and owned()
+    end
+    local function eligible()
+        if not owned() or not enemyNearestAdmitted(ply, false) or not owned() then return false end
+        if enemyMarkerMap() ~= grant.map or not targetCurrent() then return false end
+        -- Confirm actor and map after target getters; these checks are bounded,
+        -- not a guarantee against arbitrary getters mutating unrelated state.
+        if not enemyNearestAdmitted(ply, false) or not owned() then return false end
+        return enemyMarkerMap() == grant.map and owned()
+    end
+    local function observed(method)
+        local ok, value = pcall(function() return enemy[method](enemy) end)
+        if not ok then return "unavailable" end
+        if type(value) ~= "number" then return "invalid nonnumeric" end
+        if not finiteStatusNumber(value) then return "invalid nonfinite" end
+        return detailNumber(value)
+    end
+    local refused = "Health inspection refused: list again with !listEventEnemies or !nearEventEnemies and copy one exact current index."
+    local ok, message, detail = pcall(function()
+        if not enemyNearestAdmitted(ply, false) or not current() then return end
+        if not token or #token > 64 or token:find("%c") then
+            return "Usage: !inspectEventEnemy <index>; copy one exact index from your latest !listEventEnemies or !nearEventEnemies page."
+        end
+        if not eligible() then return refused end
+        local health = observed("Health")
+        if not eligible() then return refused end
+        local maximum = observed("GetMaxHealth")
+        if not eligible() then return refused end
+        return "Encounter enemy index " .. token .. ": Health() = " .. health .. "; GetMaxHealth() = " .. maximum
+            .. ". Observed game values; may change.", true
+    end)
+    -- Recipient checks may reenter too. Retire only this request before feedback;
+    -- a nested feedback command keeps its newer state, with no later writes here.
+    local admitted
+    if ok and detail then
+        local checked, eligibleNow = pcall(eligible)
+        if checked and eligibleNow then admitted = true else message = refused end
+    elseif not ok then message = refused end
+    if not admitted then admitted = enemyNearestAdmitted(ply, false) end
+    if not current() then return end
+    enemyHealthRequests[ply] = nil
+    if admitted and message then pcall(adminLine, ply, message) end
 end
 
 local function removeEventEnemy(ply, text)
@@ -892,6 +971,10 @@ end
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     if type(text) ~= "string" then return end
     local command = text:match("^(!%S+)")
+    if command == "!inspectEventEnemy" then
+        inspectEventEnemy(ply, text)
+        return ""
+    end
     if command == "!markEventEnemy" or command == "!clearEventEnemyMarker" then
         sendEventEnemyMarker(ply, text, command == "!clearEventEnemyMarker")
         return ""
@@ -986,6 +1069,7 @@ end)
 hook.Add("PlayerDisconnected", "clearActivatorStatusRequest", function(ply)
     statusRequestAfter[ply] = nil
     enemyInspections[ply] = nil
+    enemyHealthRequests[ply] = nil
     enemyMarkerCaptures[ply], enemyMarkerGrants[ply] = nil, nil
     ActivatorSnapshotMarker.Cancel(ply)
     catalogInspections[ply] = nil
@@ -993,6 +1077,7 @@ hook.Add("PlayerDisconnected", "clearActivatorStatusRequest", function(ply)
     detailRequests[ply] = nil
 end)
 hook.Add("Initialize", "clearActivatorCatalogReferences", function()
+    enemyHealthRequests = {}
     enemyMarkerCaptures, enemyMarkerGrants = {}, {}
     catalogInspections = {}
     catalogRequests = {}
@@ -1119,6 +1204,7 @@ hook.Add("PlayerSay", "refreshReadyActivators", function(ply, text)
 end)
 
 local function finishEvent(completed)
+    enemyHealthRequests = {}
     enemyMarkerCaptures, enemyMarkerGrants = {}, {}
     enemyInspections = {}
     enemyRemovalRequests = {}

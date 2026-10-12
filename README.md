@@ -86,6 +86,7 @@ Admin chat commands:
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
 - `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
 - `!nearEventEnemies [page]`: privately inspect those enemies by current 3D distance from a living admin
+- `!inspectEventEnemy <index>`: privately observe one exact listed enemy's `Health()` and `GetMaxHealth()`
 - `!markEventEnemy <index>`: privately mark one freshly inspected remaining enemy's current position for 15 seconds
 - `!clearEventEnemyMarker`: privately clear the shared temporary snapshot slot
 
@@ -355,6 +356,48 @@ marker/removal selection as a successful ordinary page. A failed nearest attempt
 retires marker permission while preserving the last successful removal page;
 current action admission still applies. A capture superseded during getters cannot
 overwrite a newer page. Ordinary listing retains its existing output and ordering.
+
+### Inspect one enemy's observed health
+
+After `!listEventEnemies [page]` or `!nearEventEnemies [page]`, use
+`!inspectEventEnemy <index>` with one exact unique index from your latest eligible
+page. The command reads the same owned entity's `Health()` and `GetMaxHealth()`
+once each at inspection time and sends one private line. Another admin must list
+independently. Dead admins can inspect an eligible page; health inspection needs
+neither a living requester nor their position.
+
+These are independent observed game values, as described by the engine's
+[Health API](https://wiki.facepunch.com/gmod/Entity:Health) and
+[GetMaxHealth API](https://wiki.facepunch.com/gmod/Entity:GetMaxHealth).
+The addon sets spawn health with `SetHealth`, but does not set `SetMaxHealth`.
+No ratio, configured-maximum claim, invulnerability diagnosis or kill prediction
+is made. The two reads are not an atomic engine snapshot and may change afterward.
+Finite zero, negative, fractional and above-maximum observations are retained.
+Each missing or throwing getter shows `unavailable`; a nonnumeric or nonfinite
+result has a fixed diagnostic, without hiding the other usable observation.
+Configured health generators are never sampled by inspection.
+
+Health eligibility starts only after the exact page's full server reply sequence
+returns, outside encounter construction. This does not prove client receipt or
+display. Existing marker/removal grants keep their established timing. Any newer
+listing attempt, even a failed one, invalidates health eligibility. Accepted
+removal consumes the requester's page as before; disconnect, server Initialize,
+encounter retirement/replacement, changed or unavailable map, changed index,
+death/removal/deletion and pending target cleanup also prevent inspection.
+A reused index never resolves a replacement entity. List again and copy one exact
+current index when refused. There is no timed health lease. Stable interrupted
+encounters and paused automatic spawning still allow eligible surviving targets;
+another admin's pending cleanup blocks only its selected target.
+
+Inspection neither consumes nor renews marker/removal authority, changes health,
+spawns, removes, invokes randomness, writes saved data, creates timers or sends
+network packets. Nested requests and lifecycle changes suppress obsolete replies;
+feedback itself has no later state writes. The regression tests exercise bounded
+callback transitions, not arbitrary mutation by unsupported getters. Native
+Garry's Mod entity lifetime/index reuse, health APIs, pending deletion and deployed
+chat-addon privacy remain unverified. A disposable-server smoke check should use
+two admins, damage a surviving enemy between observations, exercise pending
+removal and encounter replacement, and confirm ordinary marker/removal workflows.
 
 ### Mark one inspected encounter enemy
 
