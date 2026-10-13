@@ -201,7 +201,7 @@ local function currentSpawnCatalogue(sender, request)
 end
 local spawnMarkerOperations = {}
 util.AddNetworkString("ActivatorSpawnMarker")
--- Both snapshot kinds occupy one client slot and share only operation/transport.
+-- Snapshot kinds occupy one client slot and share only operation/transport.
 ActivatorSnapshotMarker = {}
 function ActivatorSnapshotMarker.Claim(sender)
     local operation = {}
@@ -652,8 +652,9 @@ local activatorHelp = {
         "Activator help: markers (admin commands).",
         "!markSpawn enemy|activator <key> - mark one inspected configured base.",
         "!markEventEnemy <index> - mark one inspected remaining enemy's position at mark time.",
+        "!markNearestActivator - mark the nearest ready actor from a fresh scan; no arguments or active encounter.",
         "!clearSpawnMarker / !clearEventEnemyMarker - clear the same shared snapshot slot.",
-        "Marking requires a living admin and an eligible inspected target. Clearing also works when dead.",
+        "Marking requires a living admin. Stored-base/enemy marks need an inspected target; nearest-ready marks use a fresh scan. Clearing also works when dead.",
         "One private HUD slot; each accepted mark replaces it and lasts at most 15 seconds.",
         "Marks are historical position snapshots, not tracking, navigation, visibility or reachability guarantees.",
         "An enemy spawn-base mark shows the configured base before enemy placement offsets.",
@@ -721,7 +722,7 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
         return ""
     end
     -- Encounter commands claim their own capture/operation before any guards.
-    if name == "!nearActivators" or name == "!inspectEventEnemy" or name == "!markEventEnemy" or name == "!clearEventEnemyMarker" or name == "!listEventEnemies" or name == "!nearEventEnemies" then return end
+    if name == "!markNearestActivator" or name == "!nearActivators" or name == "!inspectEventEnemy" or name == "!markEventEnemy" or name == "!clearEventEnemyMarker" or name == "!listEventEnemies" or name == "!nearEventEnemies" then return end
     if name == "!markSpawn" or name == "!clearSpawnMarker" then
         sendSpawnMarker(sender, text, name == "!clearSpawnMarker")
         return ""

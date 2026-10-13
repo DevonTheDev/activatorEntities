@@ -33,7 +33,7 @@ local function decode(bits)
     end
     if show ~= true or bits < 337 then return end
     local map, kind, key = net.ReadString(), net.ReadString(), net.ReadString()
-    if not boundedString(map, 128) or (kind ~= "enemy" and kind ~= "activator" and kind ~= "event_enemy")
+    if not boundedString(map, 128) or (kind ~= "enemy" and kind ~= "activator" and kind ~= "event_enemy" and kind ~= "ready_actor")
         or not boundedString(key, 64) or key:find("%s") then return end
     local number = tonumber(key)
     if not finite(number) or number <= 0 or number % 1 ~= 0 then return end
@@ -143,6 +143,9 @@ hook.Add("HUDPaint", "ActivatorSpawnMarkerHUD", function()
     if current.kind == "event_enemy" then
         label = "Encounter enemy index " .. current.key .. " - position snapshot"
         help = "15-second snapshot; enemy may move; !clearEventEnemyMarker"
+    elseif current.kind == "ready_actor" then
+        label = "Activator actor index " .. current.key .. " - position snapshot"
+        help = "15-second snapshot; actor may move or disappear; !clearSpawnMarker"
     end
     local lineHeight = statusLine(label, left, top, available, height)
     if lineHeight then

@@ -645,6 +645,84 @@ local function enemyNearestAdmitted(ply, alive)
     return ok and admitted
 end
 
+-- Direct ready-actor marks own only the existing shared snapshot operation.
+-- No catalogue/page/interaction grant is read or installed by this command.
+local function sendNearestActivatorMarker(ply, text)
+    if ply == nil then return end
+    local operation = ActivatorSnapshotMarker.Claim(ply)
+    local owners = activeEnemies
+    local function current() return ActivatorSnapshotMarker.Current(ply, operation) end
+    local function sameEncounter() return not eventActive and rawequal(activeEnemies, owners) end
+    local refused = "Activator snapshot unchanged: ready actors or request context unavailable. Retry !markNearestActivator."
+    local ok, message = pcall(function()
+        if not IsValid(ply) or not ply:IsPlayer() or not current() then return end
+        if not ply:IsAdmin() then return "Only admins can mark ready activator snapshots." end
+        if not ply:Alive() then return "Activator snapshot unchanged: you must be alive." end
+        if not current() then return end
+        if text ~= "!markNearestActivator" then return "Usage: !markNearestActivator (no arguments)." end
+        if not sameEncounter() then return "Activator snapshot unchanged: an encounter is active or changed." end
+        local mapName, now = enemyMarkerMap(), CurTime()
+        if not mapName or not finiteStatusNumber(now) or not finiteStatusNumber(now + 15)
+            or now + 15 <= now then return refused end
+        local originX, originY, originZ = enemyNearestCoordinates(ply)
+        if originX == nil or not enemyNearestAdmitted(ply, true) or not current() or not sameEncounter() then return refused end
+        local actors = ents.FindByClass("activatorent")
+        if type(actors) ~= "table" or not current() or not sameEncounter() then return refused end
+        -- Detach the whole scan before callbacks. Duplicate entries still read
+        -- each exact native actor position once, and never resolve an index.
+        local copied, seen = {}, {}
+        for _, actor in ipairs(actors) do
+            if not seen[actor] then copied[#copied + 1], seen[actor] = actor, true end
+        end
+        local rows, selected = {}, nil
+        for _, actor in ipairs(copied) do
+            if not current() or not sameEncounter() then return refused end
+            if usableActivator(actor) then
+                local index, token = enemyLocationIndex(actor)
+                local x, y, z = enemyNearestCoordinates(actor)
+                local distance = x ~= nil and enemyNearestDistance(x, y, z, originX, originY, originZ)
+                -- Unknown distance could hide the nearest actor. Never fall
+                -- through to a farther readable actor or a catalogue base.
+                if not distance then return refused end
+                local row = {actor=actor, index=index, token=token, x=x, y=y, z=z, distance=distance}
+                rows[#rows + 1] = row
+                if not selected or distance < selected.distance
+                    or (distance == selected.distance and index and (not selected.index or index < selected.index)) then
+                    selected = row
+                end
+            end
+        end
+        if not selected or not selected.token or #selected.token > 64 then return refused end
+        local function targetsCurrent()
+            for _, row in ipairs(rows) do
+                if not usableActivator(row.actor) or not current() or not sameEncounter() then return false end
+            end
+            local _, token = enemyLocationIndex(selected.actor)
+            if token ~= selected.token or not usableActivator(selected.actor) or not current() or not sameEncounter() then return false end
+            local _, finalToken = enemyLocationIndex(selected.actor)
+            return finalToken == selected.token and current() and sameEncounter()
+        end
+        -- Callbacks can retire ownership or change admission, map, encounter,
+        -- liveness and the descriptive index. Keep the selected exact object.
+        if not targetsCurrent() or enemyMarkerMap() ~= mapName
+            or not enemyNearestAdmitted(ply, true) or not current() or not sameEncounter() then return refused end
+        local sendNow = CurTime()
+        if not finiteStatusNumber(sendNow) or sendNow < now or sendNow >= now + 15 then return refused end
+        if not targetsCurrent() or not enemyNearestAdmitted(ply, true) or enemyMarkerMap() ~= mapName
+            or not enemyNearestAdmitted(ply, true) or not current() or not sameEncounter() then return refused end
+        ActivatorSnapshotMarker.Send(ply, mapName, "ready_actor", selected.token,
+            selected.x, selected.y, selected.z, now + 15)
+        return "15-second activator actor position snapshot sent; the actor may move or disappear. !clearSpawnMarker to clear."
+    end)
+    if not ok then message = refused end
+    -- Recipient getters may themselves replace this operation; retire afterward.
+    if current() and enemyNearestAdmitted(ply, false) and ActivatorSnapshotMarker.Retire(ply, operation) then
+        if message then pcall(adminLine, ply, message) end
+    else
+        ActivatorSnapshotMarker.Retire(ply, operation)
+    end
+end
+
 -- A private ready-actor snapshot never installs a target/page/marker grant.
 -- The token only suppresses superseded controlled getter/reply callbacks.
 local function printNearActivators(ply, text)
@@ -1120,6 +1198,10 @@ end
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     if type(text) ~= "string" then return end
     local command = text:match("^(!%S+)")
+    if command == "!markNearestActivator" then
+        sendNearestActivatorMarker(ply, text)
+        return ""
+    end
     if command == "!nearActivators" then
         printNearActivators(ply, text)
         return ""

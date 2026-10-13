@@ -126,6 +126,7 @@ Admin chat commands:
 - `!refreshActivators`: retire ready addon activators; restart the normal spawn delay unless paused
 - `!spawnActivatorsNow`: attempt one fresh ready batch now when enabled, idle and empty
 - `!nearActivators [page]`: privately locate existing ready actors by current 3D distance from a living admin
+- `!markNearestActivator`: privately mark the nearest ready actor's captured position for up to 15 seconds
 - `!pauseActivatorSpawns` / `!resumeActivatorSpawns`: pause or resume automatic activator spawning for this session
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
 - `!nextEventRef <ref>`: queue an eligible entry from your latest catalog page
@@ -349,6 +350,41 @@ server is still needed to check native timer timing, replicated removal, open
 dialogue retirement and chat-addon interaction. Include a manually spawned
 activator, queue a different encounter, refresh after moving a point, and verify
 that only a later ordinary spawn uses the new position and queued definition.
+
+### Mark the nearest ready activator
+
+Use exactly `!markNearestActivator`, with no arguments, as a living admin while
+no encounter is active. It sends a private position snapshot of the nearest
+valid, non-deleting activator in a freshly copied actor scan, including manual
+actors. It compares unrounded 3D distance from your captured current position,
+with descriptive numeric entity index as the tie-break. It reads each native
+position once. If any captured ready actor has an unreadable, nonfinite or
+unrepresentable distance, or the selected index is unusable or changes, it
+refuses and preserves the current marker. It never silently chooses a farther
+readable actor or resolves a replacement through a reused index.
+
+The label says `Activator actor index ... - position snapshot`; the actor may
+move or disappear. This is nearest within that request's captured list, not a
+live tracking, navigation, health, configuration or reachability promise. The
+point shares the existing private marker slot and maximum 15-second lifetime;
+`!clearSpawnMarker` clears it. New accepted marks replace that slot. Recognized
+malformed requests stay private and preserve the displayed point; command near
+matches remain ordinary chat. The command grants no interaction or other action,
+and changes no catalogue lease, actor, config, queued choice or timer. Normal
+Use and Start still apply their existing checks.
+
+Before sending, it rechecks operation ownership, living-admin admission, map,
+encounter identity, captured ready actors and the selected index. Newer marks,
+clears, qualifying configured/enemy lists, disconnect and initialization retire
+an older in-flight operation. Getter failures are contained. No prior
+`!nearActivators` page is needed or used as authority.
+
+Update both server and client addon files and reconnect. The new `ready_actor`
+subtype uses the existing bounded packet and one-bit clear. Older clients reject
+that unknown subtype and keep their prior valid marker; updated clients retain
+the stored-base and encounter-enemy behavior. An old server may expose this
+unknown command as public chat. Native GMod packet delivery, entity timing and
+rendering remain unverified by the local host-Lua fixtures.
 
 ### Locate existing ready activators
 
