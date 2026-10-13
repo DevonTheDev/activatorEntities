@@ -13,7 +13,7 @@ return function(gmod, test, eq)
         ["events"] = {
             "Activator help: events (admin commands).",
             "!listEvents [page] - all names/diagnostics; !eligibleEvents [page] - only names passing !nextEvent checks.",
-            "!findEvents <page> <text> - literal name search; positive page: 1-6 digits; text: 1-128 bytes, no edge spaces or controls; use single separators.",
+            "!findEvents / !findEligibleEvents <page> <text> - literal names / eligible names; positive page: 1-6 digits; text: 1-128 bytes, no edge spaces or controls; use single separators.",
             "!nextEvent <exact name> - queue a case-sensitive name. Bare !nextEvent shows configured-name help.",
             "!inspectEventRef <ref> - inspect configured model, enemy class and requested count.",
             "!nextEventRef <ref> - queue the exact eligible entry from your current list/search/eligible page.",

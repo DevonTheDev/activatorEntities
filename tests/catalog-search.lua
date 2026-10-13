@@ -16,8 +16,8 @@ return function(gmod,test,eq)
         for _,line in ipairs(lines) do assert(#line<=255,"bounded private chat line"); assert(not line:find("[%c]"),"no raw ASCII controls") end
         return table.concat(lines,"\n"),lines
     end
-    local function page(env,admin,query,number)
-        local text,lines=say(env,admin,query and ("!findEvents " .. (number or 1) .. " " .. query)
+    local function page(env,admin,query,number,searchCommand)
+        local text,lines=say(env,admin,query and ((searchCommand or "!findEvents") .. " " .. (number or 1) .. " " .. query)
             or ("!listEvents" .. (number and (" " .. number) or "")))
         assert(#lines>=3 and #lines<=10,"header, at most eight body lines, footer")
         contains(lines[1],"!nextEvent eligibility only; engine unchecked")
@@ -66,10 +66,12 @@ return function(gmod,test,eq)
     end)
     for _,query in ipairs({"[a].%", "^$()*+-?", '"quoted"', "\\x00", "two  spaces", "!nextEvent", "1"}) do
         test("search treats punctuation literally: " .. query,function()
+            for _,command in ipairs({"!findEvents", "!findEligibleEvents"}) do
             local env,admin=setup({"Prefix " .. query .. " suffix","unrelated"})
-            local refs,text=page(env,admin,query); assert(refs[1]); eq(refs[2],nil)
-            contains(text,"1 matching names"); say(env,admin,"!nextEventRef " .. refs[1])
+            local refs,text=page(env,admin,query,nil,command); assert(refs[1]); eq(refs[2],nil)
+            contains(text,command == "!findEvents" and "1 matching names" or "1 matching eligible names"); say(env,admin,"!nextEventRef " .. refs[1])
             eq(state(env,"pendingSelection").name,"Prefix " .. query .. " suffix")
+            end
         end)
     end
     test("search preserves non-ASCII bytes without Unicode case folding",function()
@@ -114,11 +116,12 @@ return function(gmod,test,eq)
             local bad=say(env,admin,"!findEvents 2 absent"); contains(bad,"1-1")
         end)
     end
-    test("search accepts exactly bounded query bytes and zero-padded positive pages",function()
+    for _,command in ipairs({"!findEvents", "!findEligibleEvents"}) do
+    test("search accepts exactly bounded query bytes and zero-padded positive pages: " .. command,function()
         local query=string.rep("火",42) .. "AB"; eq(#query,128)
-        local env,admin=setup({query}); local refs=page(env,admin,query,"000001")
+        local env,admin=setup({query}); local refs=page(env,admin,query,"000001",command)
         assert(refs[1]); say(env,admin,"!nextEventRef " .. refs[1]); eq(state(env,"pendingSelection").name,query)
-        local one=page(env,admin,"a","01"); assert(one[1])
+        local one=page(env,admin,"a","01",command); assert(one[1])
     end)
     local invalid={"", " ", " 1", " Raid", " 1 ", "  1 Raid", "\t1 Raid", " 1\tRaid", " 1  Raid", " 1 Raid ",
         " 0 Raid", " 000000 Raid", " 0000001 Raid", " -1 Raid", " +1 Raid", " 1.0 Raid", " 1e0 Raid", " 0x1 Raid", " inf Raid", " NaN Raid",
@@ -126,29 +129,32 @@ return function(gmod,test,eq)
     for byte=0,31 do invalid[#invalid+1]=" 1 a" .. string.char(byte) .. "b" end
     invalid[#invalid+1]=" 1 a\127b"
     for byte=128,159 do invalid[#invalid+1]=" 1 a\194" .. string.char(byte) .. "b" end
-    test("search rejects malformed grammar ASCII and Unicode controls before reading configuration",function()
+    test("search rejects malformed grammar ASCII and Unicode controls before reading configuration: " .. command,function()
         local env,admin=setup(); local old=page(env,admin); local reads=0
         env.NPCEdits[90]=setmetatable({}, {__index=function() reads=reads+1; error("private config error") end})
         for _,suffix in ipairs(invalid) do
-            local text,lines=say(env,admin,"!findEvents" .. suffix)
-            eq(#lines,1); contains(text,"Usage: !findEvents <page> <text>")
+            local text,lines=say(env,admin,command .. suffix)
+            eq(#lines,1); contains(text,"Usage: " .. command .. " <page> <text>")
+            contains(text,command == "!findEvents" and "147 bytes" or "155 bytes")
             assert(not text:find("private config error",1,true))
         end
         eq(reads,0,"bad query cannot inspect configuration")
         env.NPCEdits[90]=nil; say(env,admin,"!nextEventRef " .. old[1]); eq(state(env,"pendingSelection").name,"Raid")
     end)
-    test("search authorizes valid admin players and ignores command lookalikes",function()
+    test("search authorizes valid admin players and ignores command lookalikes: " .. command,function()
         local env,admin=setup(); local ordinary=env.entity("player"); local prop=env.entity("prop_physics"); prop.admin=true
-        for _,command in ipairs({"!findEvents", "!findEvents 1 Raid", "!findEvents 0 Raid"}) do
-            contains(say(env,ordinary,command),"Only admins")
-            eq(env.fire("PlayerSay",prop,command),nil); eq(env.fire("PlayerSay",nil,command),nil)
-            admin.valid=false; eq(env.fire("PlayerSay",admin,command),nil); admin.valid=true
+        for _,text in ipairs({command, command .. " 1 Raid", command .. " 0 Raid"}) do
+            contains(say(env,ordinary,text),"Only admins")
+            eq(env.fire("PlayerSay",prop,text),nil); eq(env.fire("PlayerSay",nil,text),nil)
+            admin.valid=false; eq(env.fire("PlayerSay",admin,text),nil); admin.valid=true
         end
-        for _,command in ipairs({"!findEventsMore 1 Raid","!findEvents1 Raid","!findEvents/1 Raid","!findevents 1 Raid"," !findEvents 1 Raid"}) do
-            eq(env.fire("PlayerSay",admin,command),nil)
+        for _,text in ipairs({command .. "More 1 Raid",command .. "1 Raid",command .. "/1 Raid",command:lower() .. " 1 Raid"," " .. command .. " 1 Raid"}) do
+            eq(env.fire("PlayerSay",admin,text),nil)
         end
         eq(#admin.chats,0); eq(#prop.chats,0)
+        admin.alive=false; page(env,admin,"raid",1,command)
     end)
+    end
     test("search paginates only matching names in stable global order with shown-page grants",function()
         local names={"A excluded"}; for i=1,19 do names[#names+1]=string.format("Match %02d",i) end
         names[#names+1]="Z excluded"; local env,admin=setup(names); local all={}

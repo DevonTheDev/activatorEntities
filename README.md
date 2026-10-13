@@ -132,6 +132,7 @@ Admin chat commands:
 - `!listEvents [page]`: browse all configured names and their selection eligibility
 - `!eligibleEvents [page]`: browse only names passing the existing next-event selection checks
 - `!findEvents <page> <text>`: privately search configured names by a literal substring
+- `!findEligibleEvents <page> <text>`: search only names passing the existing next-event selection checks
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
 - `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
@@ -787,7 +788,7 @@ eight body lines per page and the 240-byte line budget. Zero eligible names
 produce a successful page; missing or malformed pools are described without
 claiming that the configuration is valid.
 
-List, search and eligible pages share one latest-page reference set. Any
+List, search, eligible and eligible-search pages share one latest-page reference set. Any
 successful page, including zero eligible names, replaces previous references.
 Invalid pages or unavailable configuration/map/time checks preserve the last
 successful page. Only entries on the displayed page can be inspected or queued
@@ -797,10 +798,44 @@ the existing requester, map, time and live configuration identity checks.
 pending choice, encounter, actor, interaction, timer or saved configuration and
 does not sample health or randomness. Native Garry's Mod remains unverified.
 
+### Search eligible encounter names
+
+Use `!findEligibleEvents 1 raid` to search only eligible configured names for
+`raid`, then `!findEligibleEvents 2 raid` to continue with the same text. This
+private admin command also works when dead. It combines the literal-name rules
+of `!findEvents` with the existing selection checks of `!eligibleEvents`.
+Grouping and duplicate detection still inspect the complete pool before either
+filter is applied. Models, enemy classes and other encounter settings remain
+engine unchecked.
+
+Both arguments are required: a positive page of 1-6 decimal digits and text of
+1-128 bytes, separated by single ASCII spaces. Leading page zeros are allowed;
+query edge spaces, ASCII controls, UTF-8 C1 controls and U+2028/U+2029 separators
+are rejected. Matching folds ASCII A-Z only, uses the original name bytes and
+treats punctuation literally. The total command limit is 155 bytes; the existing
+`!findEvents` limit remains 147 bytes.
+
+Counts include only matching eligible names. A successful empty page says
+"No eligible configured names match this literal search." Missing or malformed
+pools retain their explanations. Use `!findEvents <page> <text>` or `!listEvents`
+to inspect excluded records and diagnostics. Results preserve global sorted IDs,
+exact names, continuation pages, eight body lines per page and 240-byte lines.
+Retry, range and page guidance keeps the combined command and asks for the same
+text again.
+
+All four catalogue commands share the latest successful page. Even an empty
+successful search replaces older references; invalid input, out-of-range pages
+and unavailable configuration/map/time checks preserve the last successful page.
+References remain requester-owned, shown-page-only, valid for the original 60
+seconds and usable for one selection per page. Inspection never renews them.
+Combined searching preserves pending choices, actors, encounters, timers,
+interactions and saved configuration. Local tests use GMod doubles; native
+Garry's Mod behavior and deployed private chat delivery remain unverified.
+
 ### Inspect one configured encounter
 
-Copy an eligible reference from your latest `!listEvents`, `!findEvents` or
-`!eligibleEvents` page into
+Copy an eligible reference from your latest `!listEvents`, `!findEvents`,
+`!eligibleEvents` or `!findEligibleEvents` page into
 `!inspectEventRef r0000000000000012-3`. This exact admin command accepts one
 reference, with optional surrounding whitespace. It replies privately with five
 short rows: a **configuration snapshot** of the event name, `activatorModel`,
