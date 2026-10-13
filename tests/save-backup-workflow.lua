@@ -749,4 +749,206 @@ return function(gmod, test, eq)
             finishRound(env,admin,{enemies[2]})
         end)
     end
+    -- Cached status is exercised through real load/save/chat hooks, using the
+    -- existing detached storage fixture. The inquiry itself must add no I/O.
+    local function saveStatus(env, disk, admin, decision, permission, result)
+        local first=#admin.chats+1
+        noIO(disk,function() privateSay(env,admin,"!spawnSaveStatus") end)
+        eq(#admin.chats-first+1,3,"three fixed status lines")
+        local expected={
+            "Spawn initialization (this session): " .. decision .. ".",
+            "Spawn saving permission (this session): " .. permission .. ".",
+            "Last completed spawn save attempt (historical): " .. result .. ".",
+        }
+        for i,line in ipairs(expected) do
+            eq(admin.chats[first+i-1],line)
+            assert(#line <= 255 and not line:find("%c"),"bounded literal status")
+        end
+    end
+
+    test("spawn save status reports pending session before initialization",function()
+        local env=gmod.new(); local disk=storage(env); local admin=env.entity("player"); admin.admin=true
+        saveStatus(env,disk,admin,"pending","disabled","none completed")
+        retry(env,disk,admin,false)
+        saveStatus(env,disk,admin,"pending","disabled","disabled")
+    end)
+
+    local loadCases={
+        {"no file","no file","enabled"}, {"orphan","no file","enabled"},
+        {"canonical","loaded","enabled"}, {"legacy","loaded","enabled"}, {"both","loaded","enabled"},
+        {"nil read","read failure","disabled"}, {"throwing read","read failure","disabled"},
+        {"invalid file","invalid file","disabled"}, {"throwing existence check","read failure","disabled"},
+    }
+    for _,case in ipairs(loadCases) do
+        test("spawn save status caches load decision: " .. case[1],function()
+            local env=gmod.new(); local disk=storage(env); local admin=env.entity("player"); admin.admin=true
+            local bytes=disk.register("loaded bytes",sparse(env))
+            if case[1] == "legacy" then disk.files[legacy]=bytes
+            elseif case[1] ~= "no file" and case[1] ~= "orphan" then disk.files[canonical]=bytes end
+            if case[1] == "both" then disk.files[legacy]="invalid legacy" end
+            if case[1] == "orphan" then disk.files[backup]="orphan bytes" end
+            if case[1] == "nil read" then disk.readFaults[canonical]="nil" end
+            if case[1] == "throwing read" then disk.readFaults[canonical]="throw" end
+            if case[1] == "invalid file" then disk.files[canonical]="invalid PRIVATE file bytes" end
+            if case[1] == "throwing existence check" then env.file.Exists=function() error("PRIVATE exists failure") end end
+            env.fire("Initialize")
+            saveStatus(env,disk,admin,case[2],case[3],"none completed")
+            if case[3] == "disabled" then
+                disk.files[canonical]=bytes; disk.readFaults[canonical]=nil
+                noIO(disk,function() retry(env,disk,admin,false) end)
+                saveStatus(env,disk,admin,case[2],"disabled","disabled")
+            end
+        end)
+    end
+
+    local saveCases={
+        {"invalid current positions","invalid current positions"},
+        {"encode throw","serialization failure"}, {"encode nil","serialization failure"}, {"encode empty","serialization failure"},
+        {"unknown token","serialized validation failure"}, {"bad schema","serialized validation failure"},
+        {"backup write","backup verification failure"}, {"backup read","backup verification failure"},
+        {"canonical write","canonical verification failure"}, {"canonical read","canonical verification failure"},
+    }
+    for _,case in ipairs(saveCases) do
+        test("spawn save status records completed failure: " .. case[1],function()
+            local env,disk,admin=fixture()
+            env.SpawnPositions[4].enemySpawnPositions[10].x=901
+            if case[1] == "invalid current positions" then env.SpawnPositions[4].enemySpawnPositions[10].x=math.huge
+            elseif case[1]:sub(1,7) == "encode " then disk.encodeFault=case[1]:sub(8)
+            elseif case[1] == "unknown token" or case[1] == "bad schema" then disk.encodeFault=case[1]
+            elseif case[1] == "backup write" then disk.writeFaults[backup]="false"
+            elseif case[1] == "backup read" then disk.readFaults[backup]="wrong"
+            elseif case[1] == "canonical write" then disk.writeFaults[canonical]="false"
+            elseif case[1] == "canonical read" then disk.readFaults[canonical]="wrong" end
+            retry(env,disk,admin,false)
+            saveStatus(env,disk,admin,"loaded","enabled",case[2])
+        end)
+    end
+
+    for _,changed in ipairs({false,true}) do
+        test("spawn save status records verified success with changed bytes: " .. tostring(changed),function()
+            local env,disk,admin=fixture()
+            if changed then env.SpawnPositions[4].enemySpawnPositions[10].x=801 end
+            retry(env,disk,admin,true)
+            if not changed then eq(count(disk,"write"),0,"byte-identical save uses readback without rewriting") end
+            saveStatus(env,disk,admin,"loaded","enabled","verified success")
+        end)
+    end
+
+    test("spawn save status updates after failed edit and successful retry",function()
+        local env,disk,admin,_,_,old=fixture(); inspect(env,admin,kinds[1])
+        disk.writeFaults[canonical]="false"
+        contains(move(env,admin,kinds[1]),"remains in memory")
+        saveStatus(env,disk,admin,"loaded","enabled","canonical verification failure")
+        disk.writeFaults[canonical]=nil; retry(env,disk,admin,true)
+        saveStatus(env,disk,admin,"loaded","enabled","verified success")
+        eq(disk.files[backup],old); eq(count(disk,"write",backup),1)
+    end)
+
+    test("spawn save status remains historical after external disk and configuration changes",function()
+        local env,disk,admin=fixture(); retry(env,disk,admin,true)
+        disk.files[canonical]="externally damaged bytes"
+        env.SpawnPositions={broken=true}
+        saveStatus(env,disk,admin,"loaded","enabled","verified success")
+    end)
+
+    for _,failure in ipairs({"validation","diagnostic","success print"}) do
+        test("spawn save status retains last completion after interrupted " .. failure,function()
+            local env,disk,admin=fixture(); disk.encodeFault="nil"; retry(env,disk,admin,false); disk.encodeFault=nil
+            env.SpawnPositions[4].enemySpawnPositions[10].x=707
+            if failure == "validation" then env.isvector=function() error("PRIVATE validation") end
+            elseif failure == "diagnostic" then disk.encodeFault="nil"; env.ErrorNoHalt=function() error("PRIVATE diagnostic") end
+            else env.print=function() error("PRIVATE success output") end end
+            local ok=pcall(env.hooks.ShutDown.saveTheTables); eq(ok,false,"injected ordinary-save exception remains unchanged")
+            saveStatus(env,disk,admin,"loaded","enabled","serialization failure")
+        end)
+    end
+
+    test("spawn save status resets both histories before Initialize reads and after it completes",function()
+        local env,disk,admin=fixture(); retry(env,disk,admin,true)
+        local exists=env.file.Exists; local entered=false
+        env.file.Exists=function(...)
+            if not entered then
+                entered=true
+                saveStatus(env,disk,admin,"pending","disabled","none completed")
+            end
+            return exists(...)
+        end
+        disk.files[canonical]=nil; env.fire("Initialize"); assert(entered)
+        saveStatus(env,disk,admin,"no file","enabled","none completed")
+    end)
+
+    for _,action in ipairs({"save","Initialize"}) do
+        test("spawn save status snapshots all labels before reply reenters " .. action,function()
+            local env,disk,admin,second=fixture(); retry(env,disk,admin,true)
+            local first=#admin.chats+1; local reply=admin.ChatPrint; local entered=false
+            admin.ChatPrint=function(self,line)
+                reply(self,line)
+                if not entered then
+                    entered=true
+                    if action == "save" then disk.encodeFault="nil"; retry(env,disk,second,false)
+                    else disk.files[canonical]="invalid bytes"; env.fire("Initialize") end
+                end
+            end
+            eq(say(env,admin,"!spawnSaveStatus"),""); assert(entered); eq(#admin.chats-first+1,3)
+            eq(admin.chats[first],"Spawn initialization (this session): loaded.")
+            eq(admin.chats[first+1],"Spawn saving permission (this session): enabled.")
+            eq(admin.chats[first+2],"Last completed spawn save attempt (historical): verified success.")
+            admin.ChatPrint=reply
+            if action == "save" then saveStatus(env,disk,admin,"loaded","enabled","serialization failure")
+            else saveStatus(env,disk,admin,"invalid file","disabled","none completed") end
+        end)
+    end
+
+    for _,action in ipairs({"Start","Cancel"}) do
+        test("spawn save status preserves open " .. action .. " and both inspected pages",function()
+            local env,disk,admin,second=fixture(); local menu=readyDialogue(env,admin)
+            inspect(env,admin,kinds[1]); inspect(env,second,kinds[2])
+            local positions=tree(env.SpawnPositions); local before=lifecycle(env,admin)
+            saveStatus(env,disk,admin,"loaded","enabled","none completed")
+            sameTree(env.SpawnPositions,positions); sameLifecycle(env,admin,before)
+            contains(move(env,admin,kinds[1]),"successfully moved")
+            contains(move(env,second,kinds[2]),"successfully moved")
+            if action == "Start" then finishRound(env,admin,startDialogue(env,admin,menu))
+            else
+                menu.quit:DoClick(); env.deliver(menu.client.messages[#menu.client.messages],admin)
+                env.receive("SendNPCInformation",admin,"Ambush"); eq(env.totalEnemies,0)
+            end
+        end)
+    end
+
+    test("spawn save status preserves active progress and pending choice",function()
+        local env,disk,admin=fixture(); local enemies=startDialogue(env,admin,readyDialogue(env,admin))
+        env.fire("OnNPCKilled",enemies[1],admin); eq(env.totalEnemies,1)
+        local before=lifecycle(env,admin)
+        saveStatus(env,disk,admin,"loaded","enabled","none completed"); sameLifecycle(env,admin,before)
+        env.receive("SendNPCInformation",admin,"Ambush"); eq(env.totalEnemies,1)
+        finishRound(env,admin,{enemies[2]})
+    end)
+    for _,outer in ipairs({"failed","successful"}) do
+        test("spawn save status records outer completion after reentrant " .. outer .. " logging",function()
+            local env,disk,admin=fixture(); local entered=false
+            if outer == "failed" then
+                disk.encodeFault="nil"
+                env.ErrorNoHalt=function()
+                    if not entered then
+                        entered=true; saveStatus(env,disk,admin,"loaded","enabled","none completed")
+                        disk.encodeFault=nil; retry(env,disk,admin,true)
+                    end
+                end
+                retry(env,disk,admin,false)
+                saveStatus(env,disk,admin,"loaded","enabled","serialization failure")
+            else
+                env.SpawnPositions[4].enemySpawnPositions[10].x=609
+                env.print=function()
+                    if not entered then
+                        entered=true; saveStatus(env,disk,admin,"loaded","enabled","none completed")
+                        disk.encodeFault="nil"; retry(env,disk,admin,false)
+                    end
+                end
+                contains(privateSay(env,admin,"!saveSpawns"),"Spawn save verified for all maps.")
+                saveStatus(env,disk,admin,"loaded","enabled","verified success")
+            end
+            assert(entered,"existing log callback must reenter")
+        end)
+    end
 end

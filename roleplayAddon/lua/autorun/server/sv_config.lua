@@ -590,6 +590,10 @@ end)
 
 -- The save routine is assigned below before any chat command can run.
 local saveSpawnPositions
+local canSaveSpawnPositions = false
+-- Fixed session history only; inquiry never probes files or configuration.
+local spawnLoadDecision = "pending"
+local lastSpawnSaveResult = "none completed"
 local function confirmSpawnEdit(sender, message)
     if not saveSpawnPositions() then
         message = message .. " This change remains in memory; saving failed, is disabled or could not be verified. Retry: !saveSpawns; check the server console."
@@ -630,7 +634,7 @@ local activatorHelp = {
         "New pages, accepted edits or lifecycle/identity changes can invalidate permission. Configured pages have no timed or death expiry.",
         "!nearSpawns requires a living admin; !listSpawns also works when dead.",
         "Accepted edits attempt saving immediately; failure can leave changes in memory.",
-        "!saveSpawns - retry verified saving of accepted positions for every map.",
+        "!saveSpawns - retry verified saving for all maps; !spawnSaveStatus - cached session/save history (also when dead).",
     },
     ["enemies"] = {
         "Activator help: enemies (admin commands).",
@@ -673,6 +677,28 @@ local activatorHelp = {
 hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if type(text) ~= "string" then return end
     local name = text:match("^(!%S+)")
+    if name == "!spawnSaveStatus" then
+        -- Contain native admission/reply errors and keep recognized chat private.
+        pcall(function()
+            if not IsValid(sender) or not sender:IsPlayer() then return end
+            if not sender:IsAdmin() then
+                sender:ChatPrint("Only admins can inspect spawn saving status.")
+                return
+            end
+            if text ~= name then
+                sender:ChatPrint("Usage: !spawnSaveStatus (cached session and historical save status).")
+                return
+            end
+            -- Copy all fixed labels before ChatPrint can reenter load/save hooks.
+            local lines = {
+                "Spawn initialization (this session): " .. spawnLoadDecision .. ".",
+                "Spawn saving permission (this session): " .. (canSaveSpawnPositions and "enabled" or "disabled") .. ".",
+                "Last completed spawn save attempt (historical): " .. lastSpawnSaveResult .. ".",
+            }
+            for _, line in ipairs(lines) do sender:ChatPrint(line) end
+        end)
+        return ""
+    end
     if name == "!activatorHelp" then
         -- Even rejected input and native reply failures remain requester-private.
         pcall(function()
@@ -824,7 +850,6 @@ end)
 local spawnDataFile = "devonsspawninfo.json"
 local legacySpawnDataFile = "DevonsSpawnInfo.json"
 local spawnBackupFile = "devonsspawninfo.backup.json"
-local canSaveSpawnPositions = false
 -- Only acknowledged, immutable bytes may become the next recovery copy.
 local lastGoodSpawnBytes, preparedSpawnBackupBytes
 
@@ -886,33 +911,43 @@ end
 saveSpawnPositions = function()
     if not canSaveSpawnPositions then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Spawn saving is disabled; existing data was left untouched.\n")
+        lastSpawnSaveResult = "disabled"
         return false
     end
     if not validSpawnPositions(SpawnPositions) then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Invalid current spawn positions; existing data was left untouched.\n")
+        lastSpawnSaveResult = "invalid current positions"
         return false
     end
     local encoded, converted = pcall(util.TableToJSON, SpawnPositions)
     if not encoded or type(converted) ~= "string" or converted == "" then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not serialize spawn positions; existing data was left untouched.\n")
+        lastSpawnSaveResult = "serialization failure"
         return false
     end
     if not decodeSpawnPositions(converted) then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not validate serialized spawn positions for " .. spawnDataFile .. "; existing data was left untouched.\n")
+        lastSpawnSaveResult = "serialized validation failure"
         return false
     end
     -- Byte equality only: differently ordered/formatted JSON is a changed save.
-    if converted == lastGoodSpawnBytes and spawnFileMatches(spawnDataFile, lastGoodSpawnBytes) then return true end
+    if converted == lastGoodSpawnBytes and spawnFileMatches(spawnDataFile, lastGoodSpawnBytes) then
+        lastSpawnSaveResult = "verified success"
+        return true
+    end
     if not prepareSpawnBackup() then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not prepare or verify spawn backup " .. spawnBackupFile .. "; " .. spawnDataFile .. " was left untouched.\n")
+        lastSpawnSaveResult = "backup verification failure"
         return false
     end
     if not writeVerifiedSpawnFile(spawnDataFile, converted) then
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not save and verify spawn positions in " .. spawnDataFile .. ".\n")
+        lastSpawnSaveResult = "canonical verification failure"
         return false
     end
     lastGoodSpawnBytes = converted
     print("DEVONS ROLEPLAY ADDON - The spawn positions table was successfully saved")
+    lastSpawnSaveResult = "verified success"
     return true
 end
 
@@ -923,23 +958,28 @@ end)
 hook.Add("Initialize", "loadTheTables", function()
     spawnInspections, spawnMarkerOperations, spawnCatalogueRequests = {}, {}, {}
     canSaveSpawnPositions = false
+    spawnLoadDecision, lastSpawnSaveResult = "pending", "none completed"
     lastGoodSpawnBytes, preparedSpawnBackupBytes = nil, nil
     local read, JSONData, filename = pcall(readSpawnData)
     if not read or (filename and type(JSONData) ~= "string") then
+        spawnLoadDecision = "read failure"
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Could not read saved spawn positions. Using configured positions; saving is disabled. Back up and repair the DATA file, then restart.\n")
         return
     end
     if not filename then
+        spawnLoadDecision = "no file"
         canSaveSpawnPositions = true
         return
     end
     local positions = decodeSpawnPositions(JSONData)
     if not positions then
+        spawnLoadDecision = "invalid file"
         ErrorNoHalt("DEVONS ROLEPLAY ADDON - Invalid spawn positions in " .. filename .. ". Using configured positions; saving is disabled. Back up and repair the DATA file, then restart.\n")
         return
     end
     SpawnPositions = positions
     lastGoodSpawnBytes = JSONData
+    spawnLoadDecision = "loaded"
     canSaveSpawnPositions = true
     print("DEVONS ROLEPLAY ADDON - The spawn positions table was successfully loaded")
 end)

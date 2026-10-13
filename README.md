@@ -121,6 +121,7 @@ Admin chat commands:
 - `!removeEnemySpawn <key>` / `!removeActivatorSpawn <key>`: remove one freshly inspected position
 - `!moveEnemySpawn <key>` / `!moveActivatorSpawn <key>`: move one freshly inspected position to where you are standing
 - `!saveSpawns`: privately retry the verified save of accepted spawn positions for all maps
+- `!spawnSaveStatus`: privately read cached session/load and historical save-attempt status, also while dead
 - `!stopEvent`: remove the current event's enemies; restart the spawn delay unless paused
 - `!refreshActivators`: retire ready addon activators; restart the normal spawn delay unless paused
 - `!spawnActivatorsNow`: attempt one fresh ready batch now when enabled, idle and empty
@@ -827,6 +828,28 @@ list and inspect with two admins, select the inspected reference, and try an
 expired or replaced reference while confirming the existing encounter is intact.
 
 ### Saved spawn data and recovery
+
+Use the exact admin command `!spawnSaveStatus` for three private, fixed-text
+lines: the session initialization/load decision (`pending`, `no file`,
+`read failure`, `invalid file`, or `loaded`), the current session save permission
+(`enabled` or `disabled`), and the last normally completed save-attempt result.
+That last result is explicitly historical: `none completed`, `disabled`,
+`invalid current positions`, `serialization failure`, `serialized validation failure`,
+`backup verification failure`, `canonical verification failure`, or `verified success`.
+Verified success includes byte-identical canonical read-back without a rewrite.
+An interrupted attempt records no result; the last completed attempt stays visible.
+Initialization resets both history labels before trying to load.
+
+The inquiry also works while dead. Extra arguments receive private usage help;
+non-admins receive a private denial. It only copies cached labels, before the
+first reply, so a reply callback that triggers a save or initialization cannot
+mix old and new labels within that inquiry. Native admission and reply exceptions
+are contained; this is not a guarantee against arbitrary modified API callbacks.
+It performs no filesystem, codec, configuration-validation, entity-enumeration,
+timer work or custom net operations. Its private ChatPrint replies still use
+native networking. Inspection authority and encounter state stay unchanged.
+A historical success says nothing about current disk health, later external
+changes or durability; the inquiry neither verifies nor repairs storage.
 
 Use the exact admin command `!saveSpawns` after correcting a transient save
 failure. It retries the complete accepted configuration, including empty lists,

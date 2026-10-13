@@ -32,7 +32,7 @@ return function(gmod, test, eq)
             "New pages, accepted edits or lifecycle/identity changes can invalidate permission. Configured pages have no timed or death expiry.",
             "!nearSpawns requires a living admin; !listSpawns also works when dead.",
             "Accepted edits attempt saving immediately; failure can leave changes in memory.",
-            "!saveSpawns - retry verified saving of accepted positions for every map.",
+            "!saveSpawns - retry verified saving for all maps; !spawnSaveStatus - cached session/save history (also when dead).",
         },
         ["enemies"] = {
             "Activator help: enemies (admin commands).",
@@ -328,5 +328,145 @@ return function(gmod, test, eq)
         eq(env.fire("PlayerSay", admin, "!setEnemySpawn"), nil)
         capture(env, admin, "!pauseActivatorSpawns")
         eq(admin.chats[#admin.chats], "Automatic activator spawning paused. Existing activators and encounters remain usable.")
+    end)
+    local statusExpected={
+        "Spawn initialization (this session): pending.",
+        "Spawn saving permission (this session): disabled.",
+        "Last completed spawn save attempt (historical): none completed.",
+    }
+    local statusUsage="Usage: !spawnSaveStatus (cached session and historical save status)."
+    local statusDenial="Only admins can inspect spawn saving status."
+    for _,alive in ipairs({true,false}) do
+        test("spawn save status privately replies while alive: " .. tostring(alive),function()
+            local env,admin=setup(); local other=env.entity("player"); other.admin=true; admin.alive=alive
+            local lines=capture(env,admin,"!spawnSaveStatus"); eq(#lines,3)
+            for i,line in ipairs(lines) do eq(line,statusExpected[i]); assert(#line <= 255 and not line:find("%c")) end
+            eq(#other.chats,0); eq(#env.messages,0)
+        end)
+    end
+    local statusBad={" force"," restore"," other_map"," now please"," ","\t","\n"," \0secret"," " .. string.rep("x",4096)}
+    for i,suffix in ipairs(statusBad) do
+        test("spawn save status privately rejects extra input " .. i,function()
+            local env,admin=setup(); local lines=capture(env,admin,"!spawnSaveStatus" .. suffix)
+            eq(#lines,1); eq(lines[1],statusUsage)
+            admin.admin=false; lines=capture(env,admin,"!spawnSaveStatus" .. suffix)
+            eq(#lines,1); eq(lines[1],statusDenial)
+        end)
+    end
+    test("spawn save status preserves unclaimed tokens and the nonstring guard",function()
+        local env,admin=setup()
+        for _,text in ipairs({"ordinary chat","!spawnSaveStatusX","!spawnsavestatus","!SpawnSaveStatus"," !spawnSaveStatus","!spawnSaveStatus!"}) do
+            eq(env.fire("PlayerSay",admin,text),nil)
+        end
+        local handler=env.hooks.PlayerSay.setUpSpawnPoints
+        eq(handler(admin,nil),nil); eq(handler(admin,false),nil); eq(handler(admin,{}),nil); eq(#admin.chats,0)
+    end)
+    for _,kind in ipairs({"nonadmin","invalid","nonplayer","nil"}) do
+        test("spawn save status admission: " .. kind,function()
+            local env,admin=setup(); local sender=admin
+            if kind == "nonadmin" then admin.admin=false
+            elseif kind == "invalid" then admin.valid=false
+            elseif kind == "nonplayer" then admin.class="worldspawn"
+            else sender=nil end
+            eq(env.fire("PlayerSay",sender,"!spawnSaveStatus"),"")
+            eq(#admin.chats,kind == "nonadmin" and 1 or 0)
+            if kind == "nonadmin" then eq(admin.chats[1],statusDenial) end
+        end)
+    end
+    for _,method in ipairs({"IsValid","IsPlayer","IsAdmin"}) do
+        test("spawn save status contains throwing admission: " .. method,function()
+            local env,admin=setup(); local calls=0
+            local function throwing() calls=calls+1; error("PRIVATE admission error") end
+            if method == "IsValid" then env.IsValid=throwing else admin[method]=throwing end
+            eq(env.fire("PlayerSay",admin,"!spawnSaveStatus"),""); eq(calls,1); eq(#admin.chats,0)
+        end)
+    end
+    for _,at in ipairs({1,2,3}) do
+        test("spawn save status contains throwing reply line " .. at,function()
+            local env,admin=setup(); local calls=0; local reply=admin.ChatPrint
+            admin.ChatPrint=function(self,line)
+                calls=calls+1; if calls == at then error("PRIVATE reply error") end; reply(self,line)
+            end
+            eq(env.fire("PlayerSay",admin,"!spawnSaveStatus"),""); eq(calls,at); eq(#admin.chats,at-1)
+            for i,line in ipairs(admin.chats) do eq(line,statusExpected[i]) end
+        end)
+    end
+    test("spawn save status coexists with all 120 PlayerSay hook orders",function()
+        local hooks={"setUpSpawnPoints","selectNextActivatorEvent","controlAutomaticActivatorSpawns","refreshReadyActivators","spawnReadyActivatorsNow"}
+        local visited=0
+        local function visit(order,used)
+            if #order == #hooks then
+                local env,admin=setup(); local result
+                for _,name in ipairs(order) do
+                    result=env.hooks.PlayerSay[name](admin,"!spawnSaveStatus"); if result ~= nil then break end
+                end
+                eq(result,""); eq(table.concat(admin.chats,"\n"),table.concat(statusExpected,"\n")); visited=visited+1; return
+            end
+            for _,name in ipairs(hooks) do if not used[name] then
+                used[name]=true; order[#order+1]=name; visit(order,used); order[#order]=nil; used[name]=nil
+            end end
+        end
+        visit({},{}); eq(visited,120)
+    end)
+    for _,mode in ipairs({"idle","ready","active","paused"}) do
+        test("spawn save status touches no external API or authority in " .. mode,function()
+            local env,admin=setup()
+            if mode == "ready" then env.ready()
+            elseif mode == "active" then env.start()
+            elseif mode == "paused" then capture(env,admin,"!pauseActivatorSpawns") end
+            capture(env,admin,"!nextEvent Raid"); capture(env,admin,"!listSpawns enemy")
+            local before={}; for _,name in ipairs(names) do before[name]=state(env,name) end
+            local positions,definitions=env.SpawnPositions,env.NPCEdits
+            local actors,packets,total=#env.entities,#env.messages,env.totalEnemies
+            local timer,stopped=env.timers.activatorSpawner,env.timers.activatorSpawner.stopped
+            local calls={}
+            local function forbidden(name) return function() calls[#calls+1]=name; error("PRIVATE " .. name) end end
+            for _,name in ipairs({"Read","Write","Exists"}) do env.file[name]=forbidden("file." .. name) end
+            for _,name in ipairs({"TableToJSON","JSONToTable"}) do env.util[name]=forbidden(name) end
+            for _,name in ipairs({"Create","Start","Stop","Simple","Remove","Adjust"}) do env.timer[name]=forbidden("timer." .. name) end
+            for _,name in ipairs({"Start","Send","Broadcast"}) do env.net[name]=forbidden("net." .. name) end
+            for _,name in ipairs({"Create","FindByClass","FindByName"}) do env.ents[name]=forbidden("ents." .. name) end
+            env.player.GetAll,env.player.GetCount=forbidden("GetAll"),forbidden("GetCount")
+            env.CurTime,env.RealTime,env.game.GetMap=forbidden("CurTime"),forbidden("RealTime"),forbidden("GetMap")
+            admin.GetPos,admin.Alive=forbidden("GetPos"),forbidden("Alive")
+            env.isvector=forbidden("isvector")
+            env.returnNPCInformation,env.returnSpawnPositions,env.returnActivatorSpawns=forbidden("definition"),forbidden("enemy base"),forbidden("activator base")
+            env.print,env.ErrorNoHalt=forbidden("console"),forbidden("diagnostic")
+            env.math=setmetatable({random=forbidden("random"),randomseed=forbidden("randomseed")},{__index=math})
+            local poison={__index=forbidden("configuration index"),__pairs=forbidden("configuration traversal")}
+            env.SpawnPositions,env.NPCEdits=setmetatable({},poison),setmetatable({},poison)
+            local lines=capture(env,admin,"!spawnSaveStatus"); eq(table.concat(lines,"\n"),table.concat(statusExpected,"\n"))
+            eq(capture(env,admin,"!spawnSaveStatus extra")[1],statusUsage)
+            eq(#calls,0); eq(#env.entities,actors); eq(#env.messages,packets); eq(env.totalEnemies,total)
+            eq(env.timers.activatorSpawner,timer); eq(timer.stopped,stopped)
+            for _,name in ipairs(names) do eq(state(env,name),before[name],name) end
+            env.SpawnPositions,env.NPCEdits=positions,definitions
+        end)
+    end
+    for _,nearest in ipairs({false,true}) do
+        test("spawn save status preserves catalog reference lifetime: " .. tostring(nearest),function()
+            local env,admin=setup(); local ref=catalog(env,admin,nearest)
+            local page=state(env,"catalogInspections")[admin]; local expires=page.expires
+            capture(env,admin,"!spawnSaveStatus"); eq(state(env,"catalogInspections")[admin],page); eq(page.expires,expires)
+            capture(env,admin,"!nextEventRef " .. ref); local pending=state(env,"pendingSelection"); eq(pending.name,"Raid")
+            capture(env,admin,"!spawnSaveStatus"); capture(env,admin,"!nextEventRef " .. ref); eq(state(env,"pendingSelection"),pending)
+            ref=catalog(env,admin,nearest); env.now=state(env,"catalogInspections")[admin].expires
+            capture(env,admin,"!spawnSaveStatus"); capture(env,admin,"!nextEventRef " .. ref); eq(state(env,"pendingSelection"),pending)
+        end)
+        test("spawn save status preserves enemy health marker and removal page: " .. tostring(nearest),function()
+            local env,admin,actors=enemies(nearest); local page=state(env,"enemyInspections")[admin]
+            local grant=state(env,"enemyMarkerGrants")[admin]; capture(env,admin,"!spawnSaveStatus")
+            eq(state(env,"enemyInspections")[admin],page); eq(state(env,"enemyMarkerGrants")[admin],grant)
+            assert(capture(env,admin,"!inspectEventEnemy 101")[1]:find("Health() =",1,true))
+            local packets=#env.messages; capture(env,admin,"!markEventEnemy 101"); eq(#env.messages,packets+1)
+            capture(env,admin,"!removeEventEnemy 101"); eq(actors[1].valid,false)
+            capture(env,admin,"!spawnSaveStatus"); capture(env,admin,"!removeEventEnemy 102"); eq(actors[2].valid,true)
+        end)
+    end
+    test("spawn save status never creates configured or enemy inspection authority",function()
+        local env,admin=setup(); local positions={[7]=env.Vector(1,2,3)}; env.SpawnPositions[1].enemySpawnPositions=positions
+        capture(env,admin,"!spawnSaveStatus"); capture(env,admin,"!removeEnemySpawn 7"); assert(positions[7])
+        local other,actors=env.start(); other.admin=true
+        capture(env,other,"!spawnSaveStatus"); capture(env,other,"!removeEventEnemy " .. actors[1]:EntIndex()); eq(actors[1].valid,true)
     end)
 end
