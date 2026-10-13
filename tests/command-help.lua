@@ -63,11 +63,11 @@ return function(gmod, test, eq)
             "!pauseActivatorSpawns - pause new automatic batches for this session; ready actors and active fights remain usable.",
             "!resumeActivatorSpawns - resume with the full normal delay, or start that delay after the active fight; never spawn immediately.",
             "!stopEvent - remove current encounter enemies; restart the normal delay unless paused.",
-            "!refreshActivators - retire ready addon actors, including manual ones; refused during an active encounter.",
-            "Stop/refresh preserve the pending choice. Refresh restarts the normal delay unless paused.",
+            "!refreshActivators - retire ready actors, including manual ones; refused during combat; restart normal delay unless paused. Stop/refresh preserve the queued choice.",
+            "!nearActivators [page] - locate existing ready actors, including manual ones; living admin, no active encounter; no action permission.",
             "!spawnActivatorsNow - one ordinary ready-batch attempt now; refused while paused, fighting, spawning or any ready actor exists.",
             "Spawn now keeps player/position/event/capacity checks, may consume the queued choice, and never schedules a retry.",
-            "These control commands take no extra arguments. A fresh session starts with automatic spawning enabled.",
+            "Only !nearActivators accepts an optional page here; other control commands take no arguments. Fresh sessions enable automatic spawning.",
         },
     }
     local topics = {"", "events", "spawns", "enemies", "markers", "control"}

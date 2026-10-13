@@ -125,6 +125,7 @@ Admin chat commands:
 - `!stopEvent`: remove the current event's enemies; restart the spawn delay unless paused
 - `!refreshActivators`: retire ready addon activators; restart the normal spawn delay unless paused
 - `!spawnActivatorsNow`: attempt one fresh ready batch now when enabled, idle and empty
+- `!nearActivators [page]`: privately locate existing ready actors by current 3D distance from a living admin
 - `!pauseActivatorSpawns` / `!resumeActivatorSpawns`: pause or resume automatic activator spawning for this session
 - `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
 - `!nextEventRef <ref>`: queue an eligible entry from your latest catalog page
@@ -348,6 +349,37 @@ server is still needed to check native timer timing, replicated removal, open
 dialogue retirement and chat-addon interaction. Include a manually spawned
 activator, queue a different encounter, refresh after moving a point, and verify
 that only a later ordinary spawn uses the new position and queued definition.
+
+### Locate existing ready activators
+
+A living admin can use `!nearActivators [page]` to find current valid,
+non-deleting `activatorent` actors, including manually placed actors. This is
+useful when `!spawnActivatorsNow` reports that a ready actor already exists.
+The command refuses during an active encounter, when using a ready actor is
+already blocked. It needs a finite current requester position.
+
+Each private page shows up to eight actors with a descriptive entity index,
+approximate actual world coordinates and distance from the requester's captured
+position in 3D Source units. It reads each position once and orders detached
+scalar copies by unrounded finite distance, then index and position text. Actors
+with unreadable or nonfinite positions remain visible as position/distance
+unavailable; unrepresentable distances sort last. Each request is fresh, so
+movement, spawning and deletion can change pages. This lists actual actors,
+whereas `!nearSpawns activator` lists configured spawn bases.
+
+"Ready" uses the existing validity/deletion predicate. It does not prove
+selected-batch ownership, valid encounter configuration, health or reachability.
+Indices can be reused and confer no action permission. Listing creates no
+inspection lease, interaction, marker or target grant and changes no actors,
+configuration, queued choice, timer or existing permission. Normal Use and Start
+still perform their existing checks.
+
+A short-lived request identity suppresses older captures superseded by another
+request, disconnect or initialization. Before replying, the command checks the
+requester, current map, encounter identity and captured actor validity again.
+Controlled getter callbacks are covered by local tests; this is not a promise
+against arbitrary addon side effects in every native getter. Native GMod
+chat/wire/render behavior remains unverified.
 
 ### Attempt a ready batch now
 

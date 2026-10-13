@@ -29,6 +29,7 @@ local initialEnemies = 0
 local statusRequestAfter = {}
 local enemyInspections = {}
 local enemyHealthRequests = {}
+local readyActivatorRequests = {}
 local enemyRemovalRequests = {}
 local enemyMarkerCaptures = {}
 local enemyMarkerGrants = {}
@@ -644,6 +645,113 @@ local function enemyNearestAdmitted(ply, alive)
     return ok and admitted
 end
 
+-- A private ready-actor snapshot never installs a target/page/marker grant.
+-- The token only suppresses superseded controlled getter/reply callbacks.
+local function printNearActivators(ply, text)
+    if ply == nil then return end
+    local request, owners = {}, activeEnemies
+    readyActivatorRequests[ply] = request
+    local function current() return rawequal(readyActivatorRequests[ply], request) end
+    local function sameEncounter() return not eventActive and rawequal(activeEnemies, owners) end
+    local function reject(message)
+        if enemyNearestAdmitted(ply, false) and current() then adminLine(ply, message) end
+    end
+    local changed = "Ready activator inspection context changed. Retry !nearActivators [page]."
+    local ok = pcall(function()
+        if not IsValid(ply) or not ply:IsPlayer() or not current() then return end
+        if not ply:IsAdmin() then
+            if current() then adminLine(ply, "Only admins can inspect ready activators.") end
+            return
+        end
+        if not ply:Alive() then reject("Ready activator inspection requires a living admin.") return end
+        if not current() then return end
+        local argument = text:match("^!nearActivators%s*(.-)%s*$")
+        local page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
+        local usage = "Usage: !nearActivators [page]; page must be a positive integer"
+        if not finiteStatusNumber(page) or page < 1 or page ~= math.floor(page) then reject(usage .. ".") return end
+        if eventActive then reject("Ready activator inspection refused: an encounter is active.") return end
+        local mapName = enemyMarkerMap()
+        if not current() then return end
+        if not mapName then reject("Ready activator inspection unavailable: current map is unavailable.") return end
+        local originX, originY, originZ = enemyNearestCoordinates(ply)
+        if not enemyNearestAdmitted(ply, true) or not current() then return end
+        if not sameEncounter() then reject(changed) return end
+        if originX == nil then
+            reject("Ready activator inspection unavailable: your current world position is unavailable.")
+            return
+        end
+        local actors = ents.FindByClass("activatorent")
+        if not current() then return end
+        if not sameEncounter() then reject(changed) return end
+        if type(actors) ~= "table" then reject("Ready activator inspection unavailable: actor scan is unavailable.") return end
+        local copied = {}
+        for _, actor in ipairs(actors) do copied[#copied + 1] = actor end
+        local rows, omitted = {}, 0
+        for _, actor in ipairs(copied) do
+            if not usableActivator(actor) then omitted = omitted + 1
+            else
+                local index, token = enemyLocationIndex(actor)
+                local x, y, z = enemyNearestCoordinates(actor)
+                local position, distance = "world position unavailable", nil
+                if x ~= nil then
+                    position = "approx rounded world position (" .. enemyLocationNumber(x) .. ", "
+                        .. enemyLocationNumber(y) .. ", " .. enemyLocationNumber(z) .. ")"
+                    distance = enemyNearestDistance(x, y, z, originX, originY, originZ)
+                end
+                local prefix = token and ("Entity index " .. token .. ": ") or "Unindexed: index unavailable; "
+                local suffix = distance and ("; ~" .. string.format("%.6g", distance) .. " units away")
+                    or "; distance unavailable"
+                rows[#rows + 1] = {actor = actor, index = index, distance = distance,
+                    positionText = prefix .. position, text = prefix .. position .. suffix .. "."}
+            end
+        end
+        if not current() then return end
+        if not sameEncounter() then reject(changed) return end
+        table.sort(rows, function(a, b)
+            if a.distance and b.distance and a.distance ~= b.distance then return a.distance < b.distance end
+            if a.distance and not b.distance then return true end
+            if b.distance and not a.distance then return false end
+            if a.index and b.index and a.index ~= b.index then return a.index < b.index end
+            if a.index and not b.index then return true end
+            if b.index and not a.index then return false end
+            return a.positionText < b.positionText
+        end)
+        local pages = math.max(1, math.ceil(#rows / 8))
+        if page > pages then reject(usage .. " in 1-" .. pages .. ".") return end
+        local replies = {"Nearest ready activators, page " .. page .. "/" .. pages .. ": listed " .. #rows
+            .. "; omitted invalid/deleting " .. omitted .. ".",
+            "Approx. distance from your captured position at request time, in 3D Source units; unknown distances last.",
+            "Ready means valid and not deleting, including manual actors; encounter configuration, health and reachability are unchecked."}
+        for i = (page - 1) * 8 + 1, math.min(page * 8, #rows) do replies[#replies + 1] = rows[i].text end
+        replies[#replies + 1] = "Indices are descriptive and can be reused; no action permission. !nearActivators [page] (1-"
+            .. pages .. "); fresh snapshot; pages can move."
+        -- Recheck every captured row, including those outside this page. Actor
+        -- getters may retire the request or change the map/encounter/admission.
+        local currentMap = enemyMarkerMap()
+        if not enemyNearestAdmitted(ply, true) or not current() then return end
+        if not sameEncounter() or currentMap ~= mapName then reject(changed) return end
+        for _, row in ipairs(rows) do
+            if not usableActivator(row.actor) then reject(changed) return end
+        end
+        currentMap = enemyMarkerMap()
+        if not enemyNearestAdmitted(ply, true) or not current() then return end
+        if not sameEncounter() or currentMap ~= mapName then reject(changed) return end
+        -- Confirm a map change made by the preceding requester getters, then
+        -- check identity/context; each copied reply also rechecks admission.
+        currentMap = enemyMarkerMap()
+        if not current() then return end
+        if not sameEncounter() or currentMap ~= mapName then reject(changed) return end
+        for _, reply in ipairs(replies) do
+            if not enemyNearestAdmitted(ply, true) or not current() or not sameEncounter() then return end
+            adminLine(ply, reply)
+        end
+    end)
+    if not ok and current() then
+        pcall(reject, "Ready activator inspection unavailable. Retry !nearActivators [page].")
+    end
+    if current() then readyActivatorRequests[ply] = nil end
+end
+
 local function enemyNearestRejection(ply, capture, message)
     -- Recipient getters can supersede the request too; check identity afterward.
     if enemyNearestAdmitted(ply, false) and rawequal(enemyMarkerCaptures[ply], capture) then
@@ -1012,6 +1120,10 @@ end
 hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
     if type(text) ~= "string" then return end
     local command = text:match("^(!%S+)")
+    if command == "!nearActivators" then
+        printNearActivators(ply, text)
+        return ""
+    end
     if command == "!inspectEventEnemy" then
         inspectEventEnemy(ply, text)
         return ""
@@ -1112,6 +1224,7 @@ hook.Add("PlayerDisconnected", "clearActivatorStatusRequest", function(ply)
     statusRequestAfter[ply] = nil
     enemyInspections[ply] = nil
     enemyHealthRequests[ply] = nil
+    readyActivatorRequests[ply] = nil
     enemyMarkerCaptures[ply], enemyMarkerGrants[ply] = nil, nil
     ActivatorSnapshotMarker.Cancel(ply)
     catalogInspections[ply] = nil
@@ -1119,6 +1232,7 @@ hook.Add("PlayerDisconnected", "clearActivatorStatusRequest", function(ply)
     detailRequests[ply] = nil
 end)
 hook.Add("Initialize", "clearActivatorCatalogReferences", function()
+    readyActivatorRequests = {}
     enemyHealthRequests = {}
     enemyMarkerCaptures, enemyMarkerGrants = {}, {}
     catalogInspections = {}
