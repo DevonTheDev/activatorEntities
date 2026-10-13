@@ -143,7 +143,7 @@ end
 
 -- Copy text and exact configuration identities before sending private replies.
 -- Continuation parts share a token; only entries on the shown page are granted.
-local function catalogLines(pool, generation, query)
+local function catalogLines(pool, generation, query, eligibleOnly)
     local lines, names, groups, targets = {}, {}, {}, {}
     local nonTables, missingNames, nonStringNames = 0, 0, 0
     local noMatch = "No configured names match this literal search."
@@ -173,7 +173,11 @@ local function catalogLines(pool, generation, query)
     -- then preserve their global IDs and exact record/key identities.
     local shown = {}
     for id, name in ipairs(names) do
-        if not query or foldCatalogName(name):find(query, 1, true) then shown[#shown + 1] = id end
+        local group = groups[name]
+        if (not query or foldCatalogName(name):find(query, 1, true))
+            and (not eligibleOnly or (name ~= "" and group.count == 1 and group.missing == 0 and group.nonTable == 0)) then
+            shown[#shown + 1] = id
+        end
     end
     for _, id in ipairs(shown) do
         local name = names[id]
@@ -212,7 +216,8 @@ local function catalogLines(pool, generation, query)
         end
     end
     if query and #shown == 0 then lines[1] = noMatch end
-    if nonTables + missingNames + nonStringNames > 0 then
+    if eligibleOnly and #shown == 0 then lines[1] = "No configured names pass !nextEvent selection checks." end
+    if not eligibleOnly and nonTables + missingNames + nonStringNames > 0 then
         lines[#lines + 1] = (query and "Unfiltered pool diagnostics: " or "")
             .. "Non-table records: " .. nonTables .. "; missing names: " .. missingNames
             .. "; non-string names: " .. nonStringNames .. "."
@@ -247,7 +252,7 @@ local function catalogAdmission(ply)
     return catalogContext()
 end
 
-local function printEventCatalog(ply, text, request, search)
+local function printEventCatalog(ply, text, request, search, eligibleOnly)
     local page, query
     if search then
         page, query = catalogSearchQuery(text)
@@ -258,7 +263,8 @@ local function printEventCatalog(ply, text, request, search)
             return
         end
     end
-    local retry = search and "!findEvents <page> <text>" or "!listEvents"
+    local browse = eligibleOnly and "!eligibleEvents" or "!listEvents"
+    local retry = search and "!findEvents <page> <text>" or browse
     -- Refuse counter exhaustion rather than reuse a generation or touch RNG.
     if catalogGeneration >= catalogMaxGeneration then
         if catalogAdmin(ply) and rawequal(catalogRequests[ply], request) then
@@ -270,7 +276,7 @@ local function printEventCatalog(ply, text, request, search)
     catalogGeneration = generation
     local pool = NPCEdits
     -- Fixed token width keeps continuation boundaries stable across generations.
-    local ok, lines, names, targets = pcall(catalogLines, pool, string.format("%016.0f", generation), query)
+    local ok, lines, names, targets = pcall(catalogLines, pool, string.format("%016.0f", generation), query, eligibleOnly)
     if not ok then
         if catalogAdmin(ply) and rawequal(catalogRequests[ply], request) then
             adminLine(ply, "Catalog unavailable: configuration could not be inspected. Retry " .. retry .. ".")
@@ -279,13 +285,13 @@ local function printEventCatalog(ply, text, request, search)
     end
     local pages = math.max(1, math.ceil(#lines / 8))
     if not search then
-        local argument = text:match("^!listEvents%s*(.-)%s*$")
+        local argument = text:match("^" .. browse .. "%s*(.-)%s*$")
         page = argument == "" and 1 or (argument:match("^%d+$") and tonumber(argument))
     end
     if not page or page < 1 or page > pages then
         if catalogAdmin(ply) and rawequal(catalogRequests[ply], request) then
             adminLine(ply, search and ("Usage: !findEvents <page> <text>; page must be in 1-" .. pages .. ".")
-                or ("Usage: !listEvents [page]; page must be a positive integer in 1-" .. pages .. "."))
+                or ("Usage: " .. browse .. " [page]; page must be a positive integer in 1-" .. pages .. "."))
         end
         return
     end
@@ -300,15 +306,18 @@ local function printEventCatalog(ply, text, request, search)
         return
     end
     local inspection = {pool = pool, map = map, issued = issued, expires = expires, targets = {}}
-    local replies = {(search and "Configured encounter search, page " or "Configured encounters, page ")
-        .. page .. "/" .. pages .. " (" .. names .. (search and " matching names" or " names")
+    local replies = {(search and "Configured encounter search, page "
+        or eligibleOnly and "Eligible configured encounters, page " or "Configured encounters, page ")
+        .. page .. "/" .. pages .. " (" .. names .. (search and " matching names" or eligibleOnly and " eligible names" or " names")
         .. "). !nextEvent eligibility only; engine unchecked."}
     for i = (page - 1) * 8 + 1, math.min(page * 8, #lines) do
         replies[#replies + 1] = lines[i]
         local target = targets[i]
         if target then inspection.targets[target.token] = target end
     end
-    replies[#replies + 1] = search and ("!findEvents <page> <text> (1-" .. pages
+    replies[#replies + 1] = eligibleOnly and ("!eligibleEvents [page] (1-" .. pages
+        .. "); new catalog pages replace refs. !nextEventRef <ref>: shown refs last 60s; one selection per page. Excluded entries: !listEvents. Escaped text is diagnostic.")
+        or search and ("!findEvents <page> <text> (1-" .. pages
         .. "); new list/search pages replace refs. !nextEventRef <ref>: shown refs last 60s; one selection per page. Escaped text is diagnostic.")
         or ("!nextEventRef <ref>: shown refs last 60s; one selection per page. !listEvents [page] (1-"
             .. pages .. ") replaces refs. !nextEvent <exact name> still works; escaped text is diagnostic.")
@@ -982,7 +991,7 @@ hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
         return ""
     end
     if command ~= "!nextEvent" and command ~= "!nextEventRef" and command ~= "!clearNextEvent" and command ~= "!eventStatus"
-        and command ~= "!listEvents" and command ~= "!findEvents" and command ~= "!inspectEventRef" and command ~= "!listEventEnemies" and command ~= "!nearEventEnemies" and command ~= "!removeEventEnemy" then return end
+        and command ~= "!listEvents" and command ~= "!findEvents" and command ~= "!eligibleEvents" and command ~= "!inspectEventRef" and command ~= "!listEventEnemies" and command ~= "!nearEventEnemies" and command ~= "!removeEventEnemy" then return end
     if ply == nil then return command == "!nearEventEnemies" and "" or nil end
     local request, inspection, selection, markerCapture
     if command == "!listEventEnemies" or command == "!nearEventEnemies" then
@@ -1001,7 +1010,7 @@ hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
         end
         return ""
     end
-    if command == "!listEvents" or command == "!findEvents" then
+    if command == "!listEvents" or command == "!findEvents" or command == "!eligibleEvents" then
         request = {}
         catalogRequests[ply] = request
     elseif command == "!inspectEventRef" then
@@ -1017,8 +1026,8 @@ hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
         removeEventEnemy(ply, text)
     elseif command == "!listEventEnemies" then
         printEventEnemies(ply, text, markerCapture)
-    elseif command == "!listEvents" or command == "!findEvents" then
-        printEventCatalog(ply, text, request, command == "!findEvents")
+    elseif command == "!listEvents" or command == "!findEvents" or command == "!eligibleEvents" then
+        printEventCatalog(ply, text, request, command == "!findEvents", command == "!eligibleEvents")
     elseif command == "!inspectEventRef" then
         printEventInspection(ply, text, inspection, request, selection)
     elseif command == "!nextEventRef" then

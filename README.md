@@ -129,6 +129,7 @@ Admin chat commands:
 - `!nextEventRef <ref>`: queue an eligible entry from your latest catalog page
 - `!inspectEventRef <ref>`: privately inspect its configured model, enemy class and requested count
 - `!listEvents [page]`: browse all configured names and their selection eligibility
+- `!eligibleEvents [page]`: browse only names passing the existing next-event selection checks
 - `!findEvents <page> <text>`: privately search configured names by a literal substring
 - `!clearNextEvent`: clear that pending choice
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
@@ -747,9 +748,40 @@ disposable server, have two admins search independently, inspect and select a
 long or escaped name by reference, switch between list/search pages, and try
 expired references while checking private chat delivery and unchanged actors.
 
+### Browse eligible encounter names
+
+Use `!eligibleEvents` for page 1, then `!eligibleEvents 2` for the next page.
+This requester-private admin catalogue includes only nonempty string names
+that are unique across the complete configured pool and have table-valued
+information, matching the existing `!nextEvent` name-selection checks. All
+records are grouped before filtering, so excluded records cannot conceal a
+duplicate name. Excluded entries and malformed-record diagnostics remain
+inspectable with `!listEvents`; `!findEvents` keeps its literal-name search.
+Eligibility does not validate models, NPC classes, health, counts or other
+encounter settings. The engine remains unchecked.
+
+The optional page follows `!listEvents` grammar: a positive decimal integer,
+with surrounding whitespace and leading zeros allowed. Omit it for page 1.
+There is no name-query argument. Output preserves complete-catalogue sorted
+entry IDs (gaps are expected), exact configured names, long-name continuations,
+eight body lines per page and the 240-byte line budget. Zero eligible names
+produce a successful page; missing or malformed pools are described without
+claiming that the configuration is valid.
+
+List, search and eligible pages share one latest-page reference set. Any
+successful page, including zero eligible names, replaces previous references.
+Invalid pages or unavailable configuration/map/time checks preserve the last
+successful page. Only entries on the displayed page can be inspected or queued
+by reference, within the original 60 seconds and one selection per page, with
+the existing requester, map, time and live configuration identity checks.
+`!inspectEventRef` does not consume or renew a reference. Browsing changes no
+pending choice, encounter, actor, interaction, timer or saved configuration and
+does not sample health or randomness. Native Garry's Mod remains unverified.
+
 ### Inspect one configured encounter
 
-Copy an eligible reference from your latest `!listEvents` or `!findEvents` page into
+Copy an eligible reference from your latest `!listEvents`, `!findEvents` or
+`!eligibleEvents` page into
 `!inspectEventRef r0000000000000012-3`. This exact admin command accepts one
 reference, with optional surrounding whitespace. It replies privately with five
 short rows: a **configuration snapshot** of the event name, `activatorModel`,
