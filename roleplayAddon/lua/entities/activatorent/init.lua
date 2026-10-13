@@ -845,6 +845,27 @@ local function sendEventEnemyMarker(ply, text, clear)
     end
 end
 
+-- Bound only the observed class payload, leaving both health fields and the
+-- disclaimer intact. Escape complete bytes without copying an unbounded value.
+local function enemyClassLabel(ok, value, budget)
+    if not ok then return "unavailable" end
+    if type(value) ~= "string" then return "invalid nonstring" end
+    if value == "" then return "invalid empty string" end
+    local escapedNote, truncatedNote = " [escaped]", " [truncated]"
+    local limit = budget - 2 - #escapedNote - #truncatedNote
+    local units, used, index, escaped = {}, 0, 1, false
+    while index <= #value do
+        local byte = value:byte(index)
+        local needsEscape = byte < 32 or byte > 126 or byte == 34 or byte == 92
+        local unit = needsEscape and string.format("\\x%02X", byte) or string.char(byte)
+        if used + #unit > limit then break end
+        units[#units + 1], used, index = unit, used + #unit, index + 1
+        escaped = escaped or needsEscape
+    end
+    return '"' .. table.concat(units) .. '"' .. (escaped and escapedNote or "")
+        .. (index <= #value and truncatedNote or "")
+end
+
 -- Observe the exact listed object; this command neither claims marker authority
 -- nor consumes/renews a page. Every callback boundary keeps its own request token.
 local function inspectEventEnemy(ply, text)
@@ -899,8 +920,11 @@ local function inspectEventEnemy(ply, text)
         if not eligible() then return refused end
         local maximum = observed("GetMaxHealth")
         if not eligible() then return refused end
-        return "Encounter enemy index " .. token .. ": Health() = " .. health .. "; GetMaxHealth() = " .. maximum
-            .. ". Observed game values; may change.", true
+        local classOK, class = pcall(function() return enemy:GetClass() end)
+        if not eligible() then return refused end
+        local prefix = "Encounter enemy index " .. token .. ": Health() = " .. health .. "; GetMaxHealth() = " .. maximum .. "; GetClass() = "
+        local suffix = ". Observed game values; may change."
+        return prefix .. enemyClassLabel(classOK, class, 255 - #prefix - #suffix) .. suffix, true
     end)
     -- Recipient checks may reenter too. Retire only this request before feedback;
     -- a nested feedback command keeps its newer state, with no later writes here.

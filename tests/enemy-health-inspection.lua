@@ -22,9 +22,17 @@ return function(gmod, test, eq)
         local admin,enemies=env.start(); admin.admin=true; admin.chats={}; admin.pos=env.Vector(0,0,0)
         for i,enemy in ipairs(enemies) do
             enemy.index=100+i; enemy.pos=env.Vector(i,0,0); enemy.health=75; enemy.maximum=100
-            -- Health doubles deliberately stay local to this module.
-            enemy.Health=function(self) self.healthReads=(self.healthReads or 0)+1; return self.health end
-            enemy.GetMaxHealth=function(self) self.maxReads=(self.maxReads or 0)+1; return self.maximum end
+            enemy.observedClass='npc_stalker'; enemy.observationOrder={}
+            -- Observation doubles deliberately stay local to this module.
+            enemy.Health=function(self)
+                self.healthReads=(self.healthReads or 0)+1; self.observationOrder[#self.observationOrder+1]='Health'; return self.health
+            end
+            enemy.GetMaxHealth=function(self)
+                self.maxReads=(self.maxReads or 0)+1; self.observationOrder[#self.observationOrder+1]='GetMaxHealth'; return self.maximum
+            end
+            enemy.GetClass=function(self)
+                self.classReads=(self.classReads or 0)+1; self.observationOrder[#self.observationOrder+1]='GetClass'; return self.observedClass
+            end
         end
         return env,admin,enemies
     end
@@ -46,25 +54,33 @@ return function(gmod, test, eq)
         return state(env).enemyInspections[admin]
     end
     local function noDetail(lines)
-        for _,line in ipairs(lines) do assert(not line:find('Health() =',1,true),'obsolete health detail: '..line) end
+        for _,line in ipairs(lines) do
+            assert(not line:find('Health() =',1,true),'obsolete health detail: '..line)
+            assert(not line:find('GetClass() =',1,true),'obsolete class detail: '..line)
+        end
     end
     local function refused(env,admin,token)
         local lines,text=inspect(env,admin,token or '101'); noDetail(lines)
         eq(#lines,1); contains(text,'list'); return lines,text
     end
-    local function detail(env,admin,token,current,maximum)
+    local function detail(env,admin,token,current,maximum,class)
         local lines,text=inspect(env,admin,token or '101'); eq(#lines,1)
-        contains(text,'Encounter enemy index '..(token or '101')..': Health() = '..(current or '75')..'; GetMaxHealth() = '..(maximum or '100')..'.')
+        contains(text,'Encounter enemy index '..(token or '101')..': Health() = '..(current or '75')..'; GetMaxHealth() = '..(maximum or '100')..'; GetClass() = '..(class or '"npc_stalker"')..'.')
         contains(text,'Observed game values; may change.'); return lines,text
     end
 
     for _,mode in ipairs({'!listEventEnemies','!nearEventEnemies'}) do
         test('health reads the exact '..mode..' target once at inspection time',function()
             local env,admin,enemies=setup(); local page=list(env,admin,mode)
-            eq(enemies[1].healthReads,nil); eq(enemies[1].maxReads,nil)
-            enemies[1].health=29; enemies[1].maximum=64; detail(env,admin,'101','29','64')
-            eq(enemies[1].healthReads,1); eq(enemies[1].maxReads,1)
-            eq(enemies[2].healthReads,nil); eq(state(env).enemyInspections[admin],page)
+            for _,enemy in ipairs(enemies) do eq(enemy.healthReads,nil); eq(enemy.maxReads,nil); eq(enemy.classReads,nil) end
+            enemies[1].health=29; enemies[1].maximum=64; enemies[1].observedClass='npc_changed'
+            env.NPCEdits=setmetatable({}, {__index=function() error('inspection must not read configuration') end})
+            env.returnNPCInformation=function() error('inspection must not look up the next event') end
+            detail(env,admin,'101','29','64','"npc_changed"')
+            eq(enemies[1].healthReads,1); eq(enemies[1].maxReads,1); eq(enemies[1].classReads,1)
+            eq(table.concat(enemies[1].observationOrder,','),'Health,GetMaxHealth,GetClass')
+            for i=2,#enemies do eq(enemies[i].healthReads,nil); eq(enemies[i].maxReads,nil); eq(enemies[i].classReads,nil) end
+            eq(state(env).enemyInspections[admin],page)
         end)
     end
     test('health exact route yields before unrelated shared guards',function()
@@ -81,7 +97,7 @@ return function(gmod, test, eq)
         test('health malformed token is private '..string.format('%q',argument),function()
             local env,admin,enemies=setup(); list(env,admin)
             local lines,text=inspect(env,admin,argument); eq(#lines,1); contains(text,'Usage: !inspectEventEnemy'); noDetail(lines)
-            eq(enemies[1].healthReads,nil)
+            eq(enemies[1].healthReads,nil); eq(enemies[1].classReads,nil)
         end)
     end
     test('health exact command lookalikes keep existing handling',function()
@@ -99,7 +115,7 @@ return function(gmod, test, eq)
             local before=admin and #admin.chats or 0
             -- Call the mounted owning hook; unrelated legacy hooks do not accept nil.
             eq(env.hooks.PlayerSay.selectNextActivatorEvent(admin,'!inspectEventEnemy 101'),'')
-            if admin then eq(#admin.chats,before) end; eq(enemies[1].healthReads,nil)
+            if admin then eq(#admin.chats,before) end; eq(enemies[1].healthReads,nil); eq(enemies[1].classReads,nil)
         end)
     end
     test('health dead admin needs neither Alive nor requester position',function()
@@ -118,7 +134,7 @@ return function(gmod, test, eq)
                 enemies[1]:Remove(); if kind=='reused index' then local replacement=env.entity('npc_stalker'); replacement.index=101; replacement.Health=function() error('replacement lookup') end end
             elseif kind=='killed' then env.fire('OnNPCKilled',enemies[1],admin)
             elseif kind=='deleting' then enemies[1].markedForDeletion=true end
-            refused(env,admin,token); eq(enemies[1].healthReads,nil)
+            refused(env,admin,token); eq(enemies[1].healthReads,nil); eq(enemies[1].classReads,nil)
         end)
     end
     test('health selection is private per admin and newer pages supersede it',function()
@@ -178,7 +194,8 @@ return function(gmod, test, eq)
             elseif transition=='initialize' then env.fire('Initialize')
             elseif transition=='complete' then for _,enemy in ipairs(enemies) do env.fire('OnNPCKilled',enemy,admin) end
             else env.stopActivatorEvent(); if transition=='replacement' then env.start() end end
-            refused(env,admin); eq(enemies[1].healthReads,nil)
+            local classReads=enemies[1].classReads -- Retirement's EntityRemoved fallback may read class.
+            refused(env,admin); eq(enemies[1].healthReads,nil); eq(enemies[1].classReads,classReads,'refused inspection adds no class read')
         end)
     end
     test('health pending cleanup blocks only its exact target and accepts paused interrupted survivors',function()
@@ -210,7 +227,7 @@ return function(gmod, test, eq)
                 local env,admin,enemies=setup(); list(env,admin); enemies[1][method]=case[2]
                 local _,text=detail(env,admin,'101',method=='Health' and case[3] or '75',method=='GetMaxHealth' and case[3] or '100')
                 assert(not text:find('sensitive raw exception',1,true))
-                eq(method=='Health' and enemies[1].maxReads or enemies[1].healthReads,1)
+                eq(method=='Health' and enemies[1].maxReads or enemies[1].healthReads,1); eq(enemies[1].classReads,1)
             end)
         end
     end
@@ -218,7 +235,7 @@ return function(gmod, test, eq)
         test('health finite numeric observations round trip '..tostring(value),function()
             local env,admin,enemies=setup(); list(env,admin); enemies[1].health=value; enemies[1].maximum=value
             local lines,text=inspect(env,admin,'101'); eq(#lines,1)
-            local current,maximum=text:match('Health%(%) = (.-); GetMaxHealth%(%) = (.-)%. Observed')
+            local current,maximum=text:match('Health%(%) = (.-); GetMaxHealth%(%) = (.-); GetClass%(%) =')
             eq(tonumber(current),value); eq(tonumber(maximum),value)
         end)
     end
@@ -227,10 +244,71 @@ return function(gmod, test, eq)
         detail(env,admin,'101','200','-2')
     end)
 
-    for _,method in ipairs({'Health','GetMaxHealth'}) do
+    local classCases={
+        {'missing',nil,'unavailable'}, {'non-callable',true,'unavailable'},
+        {'throwing',function() error('private class exception') end,'unavailable'},
+        {'nil',function() return nil end,'invalid nonstring'}, {'number',function() return 75 end,'invalid nonstring'},
+        {'boolean',function() return false end,'invalid nonstring'},
+        {'function',function() return function() end end,'invalid nonstring'},
+        {'hostile table',function() return setmetatable({}, {__tostring=function() error('must not stringify class') end}) end,'invalid nonstring'},
+        {'empty',function() return '' end,'invalid empty string'},
+    }
+    for _,case in ipairs(classCases) do
+        test('class independent '..case[1]..' diagnostic preserves health',function()
+            local env,admin,enemies=setup(); list(env,admin); enemies[1].GetClass=case[2]
+            local _,text=detail(env,admin,'101','75','100',case[3]); assert(not text:find('private class exception',1,true))
+            eq(enemies[1].healthReads,1); eq(enemies[1].maxReads,1)
+        end)
+    end
+    for _,kind in ipairs({'inherited','throwing lookup'}) do
+        test('class protected method lookup: '..kind,function()
+            local env,admin,enemies=setup(); list(env,admin); local reads=0; enemies[1].GetClass=nil
+            setmetatable(enemies[1],{__index=function(_,key)
+                if key=='GetClass' then
+                    reads=reads+1; if kind=='throwing lookup' then error('private class lookup') end
+                    return function(self) eq(self,enemies[1]); return 'inherited_class' end
+                end
+            end})
+            detail(env,admin,'101','75','100',kind=='inherited' and '"inherited_class"' or 'unavailable'); eq(reads,1)
+        end)
+    end
+    test('class byte escaping keeps quotes slashes controls and high bytes on one private line',function()
+        local env,admin,enemies=setup(); list(env,admin); enemies[1].observedClass='npc"\\\0\n\127\195\169'
+        detail(env,admin,'101','75','100','"npc\\x22\\x5C\\x00\\x0A\\x7F\\xC3\\xA9" [escaped]')
+    end)
+    for _,kind in ipairs({'exact escape boundary','truncated escape','long ASCII'}) do
+        test('class bounded payload preserves longest index and numeric observations: '..kind,function()
+            local env,admin,enemies=setup(1); local enemy=enemies[1]
+            enemy.index=1.7976931348623157e308; enemy.health=-1.7976931348623157e308; enemy.maximum=-1.2345678901234567e-200
+            enemy.observedClass=kind=='long ASCII' and string.rep('A',4096) or string.rep('\1',kind=='exact escape boundary' and 14 or 15)
+            local token='1.7976931348623157e+308'; list(env,admin)
+            local expected=kind=='long ASCII' and ('"'..string.rep('A',56)..'" [truncated]')
+                or ('"'..string.rep('\\x01',14)..'" [escaped]'..(kind=='truncated escape' and ' [truncated]' or ''))
+            local lines,text=detail(env,admin,token,'-1.7976931348623157e+308','-1.2345678901234567e-200',expected)
+            if kind=='truncated escape' then eq(#text,255,'actual full reply budget') end
+            eq(tonumber(text:match('index (%S+):')),enemy.index)
+        end)
+    end
+    test('class computed budget retains diagnostic health fields and complete disclaimer',function()
+        local env,admin,enemies=setup(); list(env,admin)
+        enemies[1].Health=function() return {} end; enemies[1].maximum=math.huge; enemies[1].observedClass=string.rep('\1',4096)
+        local lines,text=inspect(env,admin,'101'); eq(#lines,1)
+        contains(text,'Health() = invalid nonnumeric; GetMaxHealth() = invalid nonfinite; GetClass() = "')
+        contains(text,'" [escaped] [truncated]. Observed game values; may change.')
+        local payload=assert(text:match('GetClass%(%) = "(.-)"')); assert(#payload>56); eq(payload:gsub('\\x01',''),'')
+    end)
+    test('class mutation leaves earlier health observations frozen without rereading',function()
+        local env,admin,enemies=setup(); list(env,admin); local original=enemies[1].GetClass
+        enemies[1].GetClass=function(self) self.health=5; self.maximum=10; return original(self) end
+        detail(env,admin); eq(enemies[1].healthReads,1); eq(enemies[1].maxReads,1); eq(enemies[1].classReads,1)
+        eq(enemies[1].health,5); eq(enemies[1].maximum,10)
+    end)
+
+    for _,method in ipairs({'Health','GetMaxHealth','GetClass'}) do
         for _,transition in ipairs({'nested inspection','relisting','failed listing','cleanup','other cleanup','retirement','replacement','disconnect','initialize','demotion','target deletion','map change','index change'}) do
             test('health '..method..' reentry: '..transition,function()
                 local env,admin,enemies=setup(); list(env,admin); local original=enemies[1][method]; local once=false
+                local classReadsAfterTransition
                 enemies[1][method]=function(self)
                     if not once then
                         once=true
@@ -249,6 +327,8 @@ return function(gmod, test, eq)
                         elseif transition=='target deletion' then self:Remove()
                         elseif transition=='map change' then env.map='elsewhere'
                         elseif transition=='index change' then self.index=500 end
+                        -- Existing retirement cleanup may itself call GetClass; freeze its completed reads.
+                        classReadsAfterTransition=self.classReads
                     end
                     return original(self)
                 end
@@ -257,6 +337,7 @@ return function(gmod, test, eq)
                 for _,line in ipairs(lines) do if line:find('Health() =',1,true) then details=details+1; contains(line,'index 102:') end end
                 eq(details,transition=='nested inspection' and 1 or 0)
                 if method=='Health' then eq(enemies[1].maxReads,nil,'do not call next getter after lost ownership') end
+                if method~='GetClass' then eq(enemies[1].classReads,classReadsAfterTransition,'do not read class after lost ownership') end
                 eq(state(env).enemyHealthRequests[admin],nil,'request retired without restoring a newer token')
                 if transition=='relisting' then detail(env,admin) end
             end)
@@ -270,18 +351,19 @@ return function(gmod, test, eq)
     end)
     for _,transition in ipairs({'nested inspection','relisting','cleanup','disconnect'}) do
         test('health feedback reentry preserves newer state: '..transition,function()
-            local env,admin=setup(); local old=list(env,admin); local chat=admin.ChatPrint; local once=false; local newer
+            local env,admin,enemies=setup(); local old=list(env,admin); local chat=admin.ChatPrint; local once=false; local newer
             admin.ChatPrint=function(self,text)
                 chat(self,text)
                 if not once and text:find('Health() =',1,true) then
                     once=true; eq(state(env).enemyHealthRequests[admin],nil,'retire before feedback')
+                    contains(text,'GetClass() = "npc_stalker"'); enemies[1].observedClass='changed_after_reply'
                     if transition=='nested inspection' then detail(env,admin,'102')
                     elseif transition=='relisting' then newer=list(env,admin,'!nearEventEnemies')
                     elseif transition=='cleanup' then env.deferRemoval=true; env.fire('PlayerSay',admin,'!removeEventEnemy 102')
                     else env.fire('PlayerDisconnected',admin) end
                 end
             end
-            local lines=inspect(env,admin,'101'); assert(once)
+            local lines=inspect(env,admin,'101'); assert(once); eq(enemies[1].classReads,1)
             eq(state(env).enemyHealthRequests[admin],nil)
             if transition=='relisting' then eq(state(env).enemyInspections[admin],newer); assert(newer~=old)
             elseif transition=='cleanup' or transition=='disconnect' then eq(state(env).enemyInspections[admin],nil)
@@ -295,9 +377,9 @@ return function(gmod, test, eq)
         for _,line in ipairs(lines) do if line:find('Health() =',1,true) then count=count+1; contains(line,'index 102:') end end
         eq(count,1)
     end)
-    test('health final recipient/map validation follows health getter changes',function()
-        local env,admin,enemies=setup(); list(env,admin); local original=enemies[1].GetMaxHealth
-        enemies[1].GetMaxHealth=function(self)
+    test('health final recipient/map validation follows class getter changes',function()
+        local env,admin,enemies=setup(); list(env,admin); local original=enemies[1].GetClass
+        enemies[1].GetClass=function(self)
             local once=false; admin.IsAdmin=function(ply) if not once then once=true; env.map='changed' end; return ply.admin end
             return original(self)
         end
@@ -306,15 +388,16 @@ return function(gmod, test, eq)
     test('health getter exceptions and feedback failure leave existing authority unchanged',function()
         local env,admin,enemies=setup(); local page=list(env,admin); local before=state(env)
         local grant,capture=before.enemyMarkerGrants[admin],before.enemyMarkerCaptures[admin]
-        enemies[1].Health=function() error('opaque') end; detail(env,admin,'101','unavailable','100')
+        enemies[1].Health=function() error('opaque') end; enemies[1].GetClass=function() error('opaque class') end
+        detail(env,admin,'101','unavailable','100','unavailable')
         local chat=admin.ChatPrint; admin.ChatPrint=function() error('chat failure') end; eq(env.fire('PlayerSay',admin,'!inspectEventEnemy 101'),''); admin.ChatPrint=chat
         local after=state(env); eq(after.enemyInspections[admin],page); eq(after.enemyMarkerGrants[admin],grant); eq(after.enemyMarkerCaptures[admin],capture)
         eq(after.enemyHealthRequests[admin],nil); eq(env.fire('PlayerSay',admin,'!markEventEnemy 101'),'')
         eq(env.messageCount('ActivatorSpawnMarker'),1); eq(env.fire('PlayerSay',admin,'!removeEventEnemy 101'),''); eq(enemies[1].valid,false)
     end)
     test('health final admission cannot change map after last target validation',function()
-        local env,admin,enemies=setup(); list(env,admin); local original=enemies[1].GetMaxHealth
-        enemies[1].GetMaxHealth=function(self)
+        local env,admin,enemies=setup(); list(env,admin); local original=enemies[1].GetClass
+        enemies[1].GetClass=function(self)
             local calls=0
             admin.IsAdmin=function(ply)
                 calls=calls+1; if calls==3 then env.map='changed-at-final-admission' end
@@ -339,7 +422,10 @@ return function(gmod, test, eq)
         for _,key in ipairs({'Read','Write','Delete'}) do forbid(env.file,key) end
         for _,key in ipairs({'Create','FindByClass','FindByName'}) do forbid(env.ents,key) end
         for _,enemy in ipairs(enemies) do for _,key in ipairs({'SetHealth','SetMaxHealth','SetPos','SetName','SetModel','Remove','Spawn','TakeDamage','GetPos'}) do forbid(enemy,key) end end
-        local ok,err=pcall(function() detail(env,admin); refused(env,admin,'999'); enemies[1].Health=nil; detail(env,admin,'101','unavailable','100') end)
+        local ok,err=pcall(function()
+            detail(env,admin); refused(env,admin,'999'); enemies[1].Health=nil; enemies[1].GetClass=nil
+            detail(env,admin,'101','unavailable','100','unavailable')
+        end)
         for _,restore in ipairs(restores) do restore() end
         assert(ok,err); eq(#calls,0,'no swallowed forbidden operation'); local after=state(env)
         eq(after.enemyInspections[admin],page); eq(after.enemyMarkerGrants[admin],grant); eq(after.enemyMarkerCaptures[admin],capture); eq(after.activeEnemies,before.activeEnemies)
@@ -363,7 +449,7 @@ return function(gmod, test, eq)
         test('health protects throwing target admission getter '..method,function()
             local env,admin,enemies=setup(); list(env,admin)
             enemies[1][method]=function() error('private target getter error') end
-            local _,text=refused(env,admin); assert(not text:find('private target getter error',1,true)); eq(enemies[1].healthReads,nil)
+            local _,text=refused(env,admin); assert(not text:find('private target getter error',1,true)); eq(enemies[1].healthReads,nil); eq(enemies[1].classReads,nil)
         end)
     end
 end

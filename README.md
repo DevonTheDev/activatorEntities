@@ -136,7 +136,7 @@ Admin chat commands:
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
 - `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
 - `!nearEventEnemies [page]`: privately inspect those enemies by current 3D distance from a living admin
-- `!inspectEventEnemy <index>`: privately observe one exact listed enemy's `Health()` and `GetMaxHealth()`
+- `!inspectEventEnemy <index>`: privately observe one exact listed enemy's `Health()`, `GetMaxHealth()` and `GetClass()`
 - `!markEventEnemy <index>`: privately mark one freshly inspected remaining enemy's current position for 15 seconds
 - `!clearEventEnemyMarker`: privately clear the shared temporary snapshot slot
 
@@ -524,25 +524,41 @@ retires marker permission while preserving the last successful removal page;
 current action admission still applies. A capture superseded during getters cannot
 overwrite a newer page. Ordinary listing retains its existing output and ordering.
 
-### Inspect one enemy's observed health
+### Inspect one enemy's observed health and class
 
 After `!listEventEnemies [page]` or `!nearEventEnemies [page]`, use
 `!inspectEventEnemy <index>` with one exact unique index from your latest eligible
-page. The command reads the same owned entity's `Health()` and `GetMaxHealth()`
-once each at inspection time and sends one private line. Another admin must list
-independently. Dead admins can inspect an eligible page; health inspection needs
-neither a living requester nor their position.
+page. The command reads the same owned entity's `Health()`, `GetMaxHealth()` and
+`GetClass()`, in that order, once each at inspection time and sends one private
+line. Another admin must list independently. Dead admins can inspect an eligible
+page; inspection needs neither a living requester nor their position.
 
 These are independent observed game values, as described by the engine's
 [Health API](https://wiki.facepunch.com/gmod/Entity:Health) and
 [GetMaxHealth API](https://wiki.facepunch.com/gmod/Entity:GetMaxHealth).
 The addon sets spawn health with `SetHealth`, but does not set `SetMaxHealth`.
 No ratio, configured-maximum claim, invulnerability diagnosis or kill prediction
-is made. The two reads are not an atomic engine snapshot and may change afterward.
+is made. The three reads are not an atomic engine snapshot and may change afterward;
+a later getter changing health does not cause an earlier observation to be reread.
 Finite zero, negative, fractional and above-maximum observations are retained.
-Each missing or throwing getter shows `unavailable`; a nonnumeric or nonfinite
-result has a fixed diagnostic, without hiding the other usable observation.
+Each missing or throwing health getter shows `unavailable`; a nonnumeric or
+nonfinite result has a fixed diagnostic, without hiding other usable observations.
 Configured health generators are never sampled by inspection.
+
+The observed class is display information from that exact entity, not the configured
+`npcPath`, validation of a class for spawning, or authority over other entities.
+A missing, non-callable or throwing `GetClass` shows `unavailable`; a nonstring
+result shows `invalid nonstring`, and an empty string shows `invalid empty string`.
+Class failures leave usable health observations visible, and health failures leave
+usable class observations visible while the target stays eligible. No arbitrary
+value or exception is converted to text.
+
+Nonempty class strings are quoted. Printable ASCII appears directly except quote
+and backslash; those and every other byte are shown as complete `\xHH` escapes,
+with `[escaped]` when needed. Only the class payload is shortened, with an explicit
+`[truncated]` note when bytes are omitted. The formatter reads a bounded prefix and
+reserves space for both health fields and the complete disclaimer within the single
+255-byte reply. Escaped bytes are never split.
 
 Health eligibility starts only after the exact page's full server reply sequence
 returns, outside encounter construction. This does not prove client receipt or
@@ -561,10 +577,12 @@ spawns, removes, invokes randomness, writes saved data, creates timers or sends
 network packets. Nested requests and lifecycle changes suppress obsolete replies;
 feedback itself has no later state writes. The regression tests exercise bounded
 callback transitions, not arbitrary mutation by unsupported getters. Native
-Garry's Mod entity lifetime/index reuse, health APIs, pending deletion and deployed
+Garry's Mod entity lifetime/index reuse, health/class APIs, pending deletion and deployed
 chat-addon privacy remain unverified. A disposable-server smoke check should use
-two admins, damage a surviving enemy between observations, exercise pending
-removal and encounter replacement, and confirm ordinary marker/removal workflows.
+both listing commands and two admins, compare the listed target's class with its
+server observation, damage a surviving enemy between observations, exercise
+dead-admin inspection, pending removal and encounter replacement, and confirm
+ordinary marker/removal workflows.
 
 ### Mark one inspected encounter enemy
 

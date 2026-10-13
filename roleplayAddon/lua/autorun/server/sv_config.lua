@@ -640,7 +640,7 @@ local activatorHelp = {
         "Activator help: enemies (admin commands).",
         "!listEventEnemies [page] - inspect tracked enemies in the active encounter.",
         "!nearEventEnemies [page] - list nearest first; requires a living admin with a usable position.",
-        "!inspectEventEnemy <index> - observe Health() and GetMaxHealth() on an eligible page; also works when dead.",
+        "!inspectEventEnemy <index> - observe Health(), GetMaxHealth() and GetClass() on an eligible page; also works when dead.",
         "!removeEventEnemy <index> - request removal of one owned enemy from your inspected page.",
         "Copy an exact unique shown index, never a rank or stored spawn key. Indices are temporary and never authorize a replacement entity.",
         "New listing attempts invalidate health/marker permission. Removal keeps its existing latest-successful-page rules.",

@@ -38,7 +38,7 @@ return function(gmod, test, eq)
             "Activator help: enemies (admin commands).",
             "!listEventEnemies [page] - inspect tracked enemies in the active encounter.",
             "!nearEventEnemies [page] - list nearest first; requires a living admin with a usable position.",
-            "!inspectEventEnemy <index> - observe Health() and GetMaxHealth() on an eligible page; also works when dead.",
+            "!inspectEventEnemy <index> - observe Health(), GetMaxHealth() and GetClass() on an eligible page; also works when dead.",
             "!removeEventEnemy <index> - request removal of one owned enemy from your inspected page.",
             "Copy an exact unique shown index, never a rank or stored spawn key. Indices are temporary and never authorize a replacement entity.",
             "New listing attempts invalidate health/marker permission. Removal keeps its existing latest-successful-page rules.",
@@ -253,6 +253,7 @@ return function(gmod, test, eq)
             local grant = state(env, "enemyMarkerGrants")[admin]; allHelp(env, admin)
             eq(state(env, "enemyInspections")[admin], page); eq(state(env, "enemyMarkerGrants")[admin], grant)
             local lines = capture(env, admin, "!inspectEventEnemy 101"); assert(lines[1]:find("Health() =", 1, true))
+            assert(lines[1]:find('GetClass() = "npc_stalker"', 1, true))
             local packets = #env.messages; capture(env, admin, "!markEventEnemy 101"); eq(#env.messages, packets + 1)
             capture(env, admin, "!removeEventEnemy 101"); eq(actors[1].valid, false)
             allHelp(env, admin); capture(env, admin, "!removeEventEnemy 102"); eq(actors[2].valid, true)
@@ -457,7 +458,8 @@ return function(gmod, test, eq)
             local env,admin,actors=enemies(nearest); local page=state(env,"enemyInspections")[admin]
             local grant=state(env,"enemyMarkerGrants")[admin]; capture(env,admin,"!spawnSaveStatus")
             eq(state(env,"enemyInspections")[admin],page); eq(state(env,"enemyMarkerGrants")[admin],grant)
-            assert(capture(env,admin,"!inspectEventEnemy 101")[1]:find("Health() =",1,true))
+            local lines=capture(env,admin,"!inspectEventEnemy 101"); assert(lines[1]:find("Health() =",1,true))
+            assert(lines[1]:find('GetClass() = "npc_stalker"',1,true))
             local packets=#env.messages; capture(env,admin,"!markEventEnemy 101"); eq(#env.messages,packets+1)
             capture(env,admin,"!removeEventEnemy 101"); eq(actors[1].valid,false)
             capture(env,admin,"!spawnSaveStatus"); capture(env,admin,"!removeEventEnemy 102"); eq(actors[2].valid,true)
