@@ -140,6 +140,7 @@ Admin chat commands:
 - `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
 - `!nearEventEnemies [page]`: privately inspect those enemies by current 3D distance from a living admin
 - `!inspectEventEnemy <index>`: privately observe one exact listed enemy's `Health()`, `GetMaxHealth()` and `GetClass()`
+- `!removeEventEnemy <index>`: request removal of one enemy from your latest inspected page; interrupts the encounter (no victory)
 - `!markEventEnemy <index>`: privately mark one freshly inspected remaining enemy's current position for 15 seconds
 - `!clearEventEnemyMarker`: privately clear the shared temporary snapshot slot
 
