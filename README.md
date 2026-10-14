@@ -147,6 +147,25 @@ Accepted spawn additions, removals and moves attempt a verified save immediately
 to the DATA directory; clean shutdown also checks the latest state. Positions load on initialization.
 Back up the existing spawn data before testing changes.
 
+### Stop an encounter from chat
+
+`!stopEvent` now privately rejects nonadmins with "Only admins can stop
+encounters." Admins must enter the exact command with no arguments or trailing
+whitespace; malformed requests receive "Usage: !stopEvent" and do not stop
+anything. Dead admins retain access. Recognized requests from valid players
+suppress the ordinary command chat line.
+
+An exact admin request still calls the existing stop operation once. Success
+keeps the existing `entitiesDeleted` broadcast; an idle encounter or unavailable
+stop function keeps the private "There is no event running" reply. This is an
+intentional command usability change. It does not change encounter cleanup,
+scheduling, callback error handling, case sensitivity or near-match commands.
+Native chat suppression and delivery still need an in-game check.
+
+From the repository root, run `lua tests/run-stop-command.lua` with Lua 5.3 or
+newer for the 39 focused command checks. This loads only the real chat callback
+and local API doubles; it does not run the full addon or the encounter lifecycle.
+
 ### Find a command in game
 
 Use `!activatorHelp` for the topic index, then, for example,

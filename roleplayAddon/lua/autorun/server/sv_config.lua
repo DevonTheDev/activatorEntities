@@ -793,17 +793,25 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
         confirmSpawnEdit(sender, "The " .. kind .. " spawn at key " .. token .. " was successfully " .. (moving and "moved." or "removed."))
         return ""
     end
-    if not IsValid(sender) or not sender:IsPlayer() or not sender:IsAdmin() then return end
-
-    if text == "!stopEvent" then
+    if name == "!stopEvent" then
+        if not IsValid(sender) or not sender:IsPlayer() then return end
+        if not sender:IsAdmin() then
+            sender:ChatPrint("Only admins can stop encounters.")
+            return ""
+        end
+        if text ~= name then
+            sender:ChatPrint("Usage: !stopEvent")
+            return ""
+        end
         if stopActivatorEvent and stopActivatorEvent() then
             net.Start("entitiesDeleted")
             net.Send(player.GetAll())
         else
             sender:ChatPrint("There is no event running")
         end
-        return
+        return ""
     end
+    if not IsValid(sender) or not sender:IsPlayer() or not sender:IsAdmin() then return end
 
     local commands = {
         ["!setActivatorSpawn"] = {"activatorSpawnPositions", "Activator", true},
