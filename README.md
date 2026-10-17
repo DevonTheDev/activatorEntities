@@ -139,6 +139,7 @@ Admin chat commands:
 - `!clearNextEvent`: clear only the next-event override
 - `!queueEvent <exact name>`: append one future encounter to the 16-item session FIFO; repeats are allowed
 - `!eventQueue`: privately inspect FIFO order and current name availability
+- `!moveQueuedEvent <from> <to>`: move one pending occurrence between current 1-based queue positions; the destination is its final position
 - `!dropQueuedEvent`: remove exactly the FIFO head
 - `!clearEventQueue`: clear the remaining FIFO
 - `!eventStatus`: inspect automatic spawning, the active encounter, ready activators, override and queue head
@@ -636,7 +637,23 @@ repeating a name schedules another batch. This server-wide session FIFO holds
 at most 16 items. `!eventQueue` privately lists its captured order, count and
 current availability; `!dropQueuedEvent` removes exactly the current head and
 `!clearEventQueue` removes all remaining items. Those three commands take no
-arguments. All four require an admin, also work when dead, and stay private.
+arguments. Queue commands require an admin, also work when dead, and stay private.
+
+Use `!moveQueuedEvent <from> <to>` to reorder an existing pending occurrence.
+Both arguments must be canonical positive decimal positions in the current
+queue (1 through its length, at most 16), with single spaces and no extra text.
+For example, moving `1 3` in `[Raid, Patrol, Rescue, Finale]` produces
+`[Patrol, Rescue, Raid, Finale]`: the destination is the final position and all
+other items retain their relative order. Repeated names remain distinct items;
+only the chosen occurrence moves. The same position is an idle no-op.
+
+Positions are live and may change between commands or admins. No prior listing
+is required; use `!eventQueue` to inspect the current result. A full queue or an
+unavailable name can still be moved, without appending or checking configuration.
+Moves affect only remaining pending order, including while paused or while an
+active encounter or selected ready batch exists; those batches and the override
+stay unchanged. Every move, including a same-position request, is refused while
+a synchronous spawn attempt is in flight. Retry after it finishes.
 
 Append uses the same exact configured-name checks as `!nextEvent`: unknown or
 duplicate configured names and missing information are rejected. One whitespace
@@ -655,7 +672,7 @@ while only manual actors remain the existing ordinary refill behavior applies.
 
 An unavailable head blocks its planned fresh batch without skipping to a later
 item or random choice. `!eventQueue`, `!eventStatus` and the immediate command
-explain the block. Drop or clear it, correct the trusted configuration, or set a
+explain the block. Move, drop or clear it, correct the trusted configuration, or set a
 valid next-event override to run ahead of it. An unavailable override blocks
 before the FIFO; `!clearNextEvent` clears only that override, and
 `!clearEventQueue` clears only the FIFO.

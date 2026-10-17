@@ -143,14 +143,16 @@ local function printEventQueue(ply)
         queueReply(ply, i .. '. "' .. row.name,
             '" [' .. (row.reason and ("unavailable: " .. row.reason) or "available") .. "]")
     end
-    queueReply(ply, "Selected ready batch > next-event override > queue head > random. Unavailable choices block; !dropQueuedEvent or !clearEventQueue removes a blocked head. Session end loses the queue.")
+    queueReply(ply, "Selected ready batch > next-event override > queue head > random. Unavailable choices block; move, drop or clear a blocked head. Session end loses the queue.")
+    queueReply(ply, "!moveQueuedEvent <from> <to> moves one pending occurrence to its final position. Live positions may change; check !eventQueue. Moves are refused during an in-flight spawn attempt; retry after it finishes.")
 end
 
 hook.Add("PlayerSay", "manageActivatorEventQueue", function(ply, text)
     if type(text) ~= "string" then return end
     local command = text:match("^(!%S+)")
     if command ~= "!queueEvent" and command ~= "!eventQueue"
-        and command ~= "!dropQueuedEvent" and command ~= "!clearEventQueue" then return end
+        and command ~= "!dropQueuedEvent" and command ~= "!clearEventQueue"
+        and command ~= "!moveQueuedEvent" then return end
     -- Recognized queue commands stay private even when admission or feedback fails.
     pcall(function()
         if not IsValid(ply) or not ply:IsPlayer() then return end
@@ -177,6 +179,37 @@ hook.Add("PlayerSay", "manageActivatorEventQueue", function(ply, text)
             end
             encounterQueue[#encounterQueue + 1] = {name = name}
             queueReply(ply, 'Appended to the encounter queue: "' .. name, '" (' .. #encounterQueue .. '/16).')
+        elseif command == "!moveQueuedEvent" then
+            local fromText, toText = text:match("^!moveQueuedEvent ([1-9][0-9]*) ([1-9][0-9]*)$")
+            if not fromText or #fromText > 2 or #toText > 2 then
+                queueReply(ply, "Usage: !moveQueuedEvent <from> <to> (live positions 1-16; canonical decimals, single spaces; same position does nothing).")
+                return
+            end
+            local from, to = tonumber(fromText), tonumber(toText)
+            if not queueAdmin(ply) then return end
+            -- The final permission callback may reenter. Refuse even a no-op
+            -- during an attempt, then use fresh positions with no callbacks.
+            if spawnAttemptDepth > 0 then
+                queueReply(ply, "Encounter queue unchanged: a spawn attempt is in flight. Retry !moveQueuedEvent after it finishes.")
+                return
+            end
+            local count = #encounterQueue
+            if from > count or to > count then
+                queueReply(ply, "Encounter queue unchanged: both live positions must be within 1-" .. count .. ". Use !eventQueue to check the current order.")
+                return
+            end
+            local item = encounterQueue[from]
+            if from < to then
+                for i = from, to - 1 do encounterQueue[i] = encounterQueue[i + 1] end
+            elseif from > to then
+                for i = from, to + 1, -1 do encounterQueue[i] = encounterQueue[i - 1] end
+            end
+            encounterQueue[to] = item
+            -- Snapshot reply fields after commit; feedback can reenter freely.
+            local name = item.name
+            local suffix = from == to and ('" (already at live position ' .. to .. '; unchanged).')
+                or ('" (live position ' .. from .. ' -> ' .. to .. ').')
+            queueReply(ply, (from == to and 'Encounter queue unchanged: "' or 'Moved pending encounter: "') .. name, suffix)
         elseif text ~= command then
             queueReply(ply, "Usage: " .. command)
         elseif command == "!eventQueue" then
@@ -1302,7 +1335,7 @@ local function printSelectionStatus(ply)
         queueReply(ply, "Encounter queue: " .. queuedCount .. '/16; head: "' .. headName,
             '" [' .. (headInformation and "available" or ("unavailable: " .. headReason)) .. "].")
         if not headInformation then
-            queueReply(ply, "Unavailable queue head retained. Use !dropQueuedEvent or !clearEventQueue; a next-event override can run ahead of it.")
+            queueReply(ply, "Unavailable queue head retained. Use !moveQueuedEvent, !dropQueuedEvent or !clearEventQueue; a next-event override can run ahead of it.")
         end
     else queueReply(ply, "Encounter queue: 0/16; head: none.") end
     printSpawnConditions(ply, count, readyName)
@@ -1812,7 +1845,7 @@ local function attemptReadyBatch(immediate)
         local available = selectableEvent(selectedName)
         if claim and not queueMayAdmit(claim) then return queueInterrupted end
         if not available then
-            if claim then return "Immediate activator attempt blocked: the encounter queue head is unavailable. Use !dropQueuedEvent or !clearEventQueue." end
+            if claim then return "Immediate activator attempt blocked: the encounter queue head is unavailable. After this attempt, use !moveQueuedEvent, !dropQueuedEvent or !clearEventQueue." end
             return "Immediate activator attempt blocked: the selected event is unavailable."
         end
         identifier = selectedName

@@ -779,8 +779,10 @@ local activatorHelp = {
         "Override/queue edits affect future batches. A usable matching ready actor consumes one FIFO item; no fight is started.",
         "!queueEvent <exact name> - append one future encounter; session queue holds 16, repeats allowed.",
         "!eventQueue - inspect queue order. !dropQueuedEvent - drop its head. !clearEventQueue - clear the FIFO.",
+        "!moveQueuedEvent <from> <to> - move one pending occurrence to its final position; canonical decimal live positions 1-16, single spaces; same position does nothing.",
+        "Live positions can change between commands/admins; no prior listing is required. Moves leave active/ready batches and override unchanged; retry after an in-flight spawn attempt.",
         "Ready selected batch first; next-event override next; queue head next; otherwise random. Unavailable choices block.",
-        "An unavailable head stays queued until dropped or cleared. Session end loses the queue; ready-batch consumption is not fight completion.",
+        "An unavailable head blocks until moved, dropped, cleared or its configuration is fixed; nothing skips it automatically. Session end loses the queue; ready-batch consumption is not fight completion.",
         "Eligible means selectable configuration; models and NPC classes remain engine unchecked.",
     },
     ["spawns"] = {
