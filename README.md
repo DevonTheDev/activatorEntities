@@ -128,15 +128,19 @@ Admin chat commands:
 - `!nearActivators [page]`: privately locate existing ready actors by current 3D distance from a living admin
 - `!markNearestActivator`: privately mark the nearest ready actor's captured position for up to 15 seconds
 - `!pauseActivatorSpawns` / `!resumeActivatorSpawns`: pause or resume automatic activator spawning for this session
-- `!nextEvent <name>`: choose a configured encounter for the next fresh activator batch
-- `!nextEventRef <ref>`: queue an eligible entry from your latest catalog page
+- `!nextEvent <name>`: set the replaceable next-event override for a fresh activator batch
+- `!nextEventRef <ref>`: set that override from an eligible entry on your latest catalog page
 - `!inspectEventRef <ref>`: privately inspect its configured model, enemy class and requested count
 - `!listEvents [page]`: browse all configured names and their selection eligibility
 - `!eligibleEvents [page]`: browse only names passing the existing next-event selection checks
 - `!findEvents <page> <text>`: privately search configured names by a literal substring
 - `!findEligibleEvents <page> <text>`: search only names passing the existing next-event selection checks
-- `!clearNextEvent`: clear that pending choice
-- `!eventStatus`: inspect automatic spawning, the active encounter, ready activators and pending choice
+- `!clearNextEvent`: clear only the next-event override
+- `!queueEvent <exact name>`: append one future encounter to the 16-item session FIFO; repeats are allowed
+- `!eventQueue`: privately inspect FIFO order and current name availability
+- `!dropQueuedEvent`: remove exactly the FIFO head
+- `!clearEventQueue`: clear the remaining FIFO
+- `!eventStatus`: inspect automatic spawning, the active encounter, ready activators, override and queue head
 - `!listEventEnemies [page]`: privately inspect the active encounter's tracked enemy locations
 - `!nearEventEnemies [page]`: privately inspect those enemies by current 3D distance from a living admin
 - `!inspectEventEnemy <index>`: privately observe one exact listed enemy's `Health()`, `GetMaxHealth()` and `GetClass()`
@@ -444,12 +448,13 @@ ordinary ready-batch attempt immediately. Dead admins can also use it. Replies
 are private and bounded; extra arguments give usage help. It refuses while
 spawning is paused, an encounter is active, another spawn attempt is in flight,
 or any valid, non-deleting `activatorent` exists, including manual actors and
-actors left by an earlier error. Refusals leave selected ownership, the pending
-choice, RNG and the schedule unchanged.
+actors left by an earlier error. Refusals leave selected ownership, the next-event
+override, encounter FIFO, RNG and the schedule unchanged.
 
 An admitted request still checks minimum players, current-map activator
 positions, event selection and capacity in the ordinary order. It uses the
-pending choice for an empty batch, otherwise ordinary random selection. It
+next-event override for a fresh batch, otherwise the FIFO head, otherwise the
+ordinary random choice. A selected ready batch keeps its existing priority. It
 neither unpauses spawning nor changes configuration, removes actors or starts
 combat. Players still use an activator to start an encounter. Use the separate
 `!refreshActivators` command to retire existing ready actors and restart the
@@ -457,8 +462,9 @@ normal delay; refresh remains a delayed operation.
 
 The command reports an admission blocker, the final observed ready count and
 capacity, an interruption, or an error. A valid actor returning from `Spawn`
-can consume only the exact pending selection admitted for that batch. A
-selection replaced or cleared inside another addon's callback is not consumed
+can consume only the admitted next-event override or one captured FIFO head.
+The FIFO additionally requires its unchanged exact actor name after usability
+checks; see the queue section below. An override replaced or cleared inside another addon's callback is not consumed
 by the old attempt, even when its replacement uses the same name. A false
 `Spawn` return value retains the existing behavior: actor validity and deletion
 state determine admission, not that return value. These observations do not
@@ -492,9 +498,10 @@ data, configuration, progress or victory rules.
 
 For a clear arena, pause first, use `!stopEvent` separately if a fight is active,
 then use `!refreshActivators` to retire ready actors. Both commands keep automatic
-spawning paused. You can now edit positions and queue `!nextEvent <name>`.
+spawning paused. You can now edit positions, set `!nextEvent <name>` or append
+future batches with `!queueEvent <exact name>`.
 `!eventStatus` shows `paused` or `enabled` independently of the active, ready and
-pending encounter details.
+next-event override and encounter queue details.
 
 Use `!resumeActivatorSpawns` when ready. With no active encounter, it restarts the
 existing timer with its full configured delay; it never spawns immediately. If a
@@ -518,9 +525,9 @@ Garry's Mod server: pause and refresh, wait beyond the configured delay, verify
 no replacement, resume and verify replacement only after the full delay. Repeat
 with a fight ending while paused and check the private admin replies.
 
-### Choose the next encounter
+### Choose the next encounter override
 
-For example, `!nextEvent Raid` selects the configured `Raid` encounter. Use the
+For example, `!nextEvent Raid` sets the next-event override to configured `Raid`. Use the
 entry's `name` from `NPCEdits` to choose among configured encounters. Names
 match exactly, including case and spaces; unknown or duplicate names are
 rejected without losing an existing pending choice. A later valid selection
@@ -537,11 +544,11 @@ may already have consumed it. Automatic refills keep the chosen name while that
 selected batch still has its own activators. Manually spawned actors do not
 consume a pending choice or keep a departed selected batch alive.
 
-Queueing or clearing does not replace ready actors, interrupt an encounter or
+Setting or clearing the override does not replace ready actors, interrupt an encounter or
 start one automatically. Players still use an activator and pass the existing
-server checks. `!clearNextEvent` clears only the future choice, so it does not
-change a selected batch already waiting on the map. `!stopEvent` leaves the
-future choice intact. If a selected definition becomes unavailable, it is
+server checks. `!clearNextEvent` clears only the override, so it does not
+change a selected batch already waiting on the map or the encounter FIFO. `!stopEvent`
+leaves both future sources intact. If a selected definition becomes unavailable, it is
 reported as unavailable rather than silently replaced with a random choice.
 
 `!eventStatus` reports a snapshot of the actual current state, including whether
@@ -568,9 +575,72 @@ configuration and restart the server as usual.
 These are current configuration checks, not a countdown or a guarantee that
 an NPC will spawn. An encounter definition can be present while its model or
 NPC class is unusable in the engine. The status command does not consume the
-pending choice, sample random events/positions, advance the timer, or start an
-encounter. Existing spawning and selection rules continue to decide what the
-next normal attempt does.
+next-event override or queue head, sample random events/positions, advance the timer,
+or start an encounter. Existing spawning and selection rules continue to decide
+what the next normal attempt does.
+
+### Stage a finite encounter queue
+
+Use `!queueEvent Raid`, `!queueEvent Patrol`, then `!queueEvent Raid` to stage
+three future ready batches in that order. Every append is a separate item, so
+repeating a name schedules another batch. This server-wide session FIFO holds
+at most 16 items. `!eventQueue` privately lists its captured order, count and
+current availability; `!dropQueuedEvent` removes exactly the current head and
+`!clearEventQueue` removes all remaining items. Those three commands take no
+arguments. All four require an admin, also work when dead, and stay private.
+
+Append uses the same exact configured-name checks as `!nextEvent`: unknown or
+duplicate configured names and missing information are rejected. One whitespace
+separator starts the name; every following byte belongs to it. Names are not
+trimmed, unquoted or case-folded. Duplicate configured definitions are invalid;
+repeated valid FIFO items are allowed. Append validates the current name, not
+its model or NPC class, and does not freeze or copy the definition.
+
+An existing selected ready batch keeps its name while its own usable actors
+remain. A fresh batch requires no active encounter and zero usable ready actors,
+including manual actors. It uses the next-event override first, otherwise the
+FIFO head, otherwise the ordinary random choice. Both timed attempts and
+`!spawnActivatorsNow` use this priority and keep ordinary player, position and
+capacity checks. Manual actors do not consume a FIFO item, even with its name;
+while only manual actors remain the existing ordinary refill behavior applies.
+
+An unavailable head blocks its planned fresh batch without skipping to a later
+item or random choice. `!eventQueue`, `!eventStatus` and the immediate command
+explain the block. Drop or clear it, correct the trusted configuration, or set a
+valid next-event override to run ahead of it. An unavailable override blocks
+before the FIFO; `!clearNextEvent` clears only that override, and
+`!clearEventQueue` clears only the FIFO.
+
+The first returned valid, non-deleting actor whose `EventIdentifier` still
+matches the captured head establishes the selected queue batch and settles one
+item. Other actors and later refills consume nothing further. An actor renamed
+inside `Spawn` does not qualify. No qualifying return means no automatic
+consumption; an error after settlement does not restore the item. Queue edits
+never create actors, restart timers, remove actors or start combat. Players
+still start fights through the existing interaction.
+
+Synchronous callbacks can append, drop or clear future state. The admitted
+queue batch keeps its captured name; it removes the head only if that same item
+still occupies the head. Clear then append of the same name creates a new item
+that survives the old completion. A live queue claim admits only that batch,
+with one shared owner set, and recounts all usable ready actors before every
+queued creation, including the first after getter callbacks. It never expands
+its attempt's sampled capacity or original creation bound. A paused admitted
+actor may finish and settle; a retired claim after refresh cannot restore
+ownership or consume a replacement head. The legacy override keeps its existing
+qualification and callback behavior.
+
+The remaining FIFO survives admin disconnects, pause/resume, active encounters,
+stop/finish, ready refresh and ordinary cleanup in the same Lua session. It is
+never written to spawn files or backups. Restarting, changing maps or reloading
+the server module starts an empty queue. A consumed item is not restored when
+its actors are removed or a fight is stopped: this schedules ready batches,
+not guaranteed completed encounters.
+
+The focused queue source and callback-double tests cover these contracts;
+execution evidence must be reported separately. Native PlayerSay privacy,
+Spawn/EntityRemoved ordering, deletion marking, full timer delay and
+same-session cleanup still need disposable-server verification.
 
 ### Find a remaining encounter enemy
 

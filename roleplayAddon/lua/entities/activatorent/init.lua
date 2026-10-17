@@ -42,10 +42,23 @@ local catalogLifetime = 60
 local interactionLifetime = 60
 local interactionDistanceSquared = 200 * 200
 
--- Pending is a replaceable slot; a selected batch owns only its own activators.
+-- The replaceable override and finite session FIFO are independent future sources.
+-- A selected batch owns only its own activators; item identity settles a FIFO claim.
 local pendingSelection
+local encounterQueue = {}
+local queueCapacity = 16
+local queueClaim
 local selectedBatchName
 local selectedBatchEntities = {}
+
+local function ownsQueueClaim(claim)
+    return queueClaim == claim and not claim.retired and not eventActive
+end
+
+local function queueMayAdmit(claim)
+    return ownsQueueClaim(claim) and not automaticSpawnsPaused
+        and claim.generation == spawnScheduleGeneration
+end
 
 local function usableActivator(ent, removed)
     return ent ~= removed and IsValid(ent) and not ent:IsMarkedForDeletion()
@@ -59,6 +72,7 @@ local function selectedBatchAlive(removed)
 end
 
 local function clearSelectedBatch()
+    if queueClaim then queueClaim.retired = true end
     selectedBatchName = nil
     selectedBatchEntities = {}
 end
@@ -67,7 +81,11 @@ local function refreshSelectedBatch(removed)
     for ent in pairs(selectedBatchEntities) do
         if not usableActivator(ent, removed) then selectedBatchEntities[ent] = nil end
     end
-    if not next(selectedBatchEntities) then clearSelectedBatch() end
+    -- Pruning cannot retire a fresh reservation before its first qualifying return.
+    if not next(selectedBatchEntities)
+        and not (queueClaim and not queueClaim.retired and not queueClaim.settled) then
+        clearSelectedBatch()
+    end
 end
 
 -- Selection requires one exact, currently configured name with information.
@@ -98,6 +116,85 @@ local function adminLine(ply, text, suffix)
     ply:ChatPrint(text .. suffix)
 end
 
+-- Queue snapshots and replies carry no catalog/reference or action authority.
+local function queueAdmin(ply)
+    return IsValid(ply) and ply:IsPlayer() and ply:IsAdmin()
+end
+
+local function queueReply(ply, text, suffix)
+    if queueAdmin(ply) then adminLine(ply, text, suffix) end
+end
+
+local function queueSnapshot()
+    local rows = {}
+    for i, item in ipairs(encounterQueue) do rows[i] = {name = item.name} end
+    for _, row in ipairs(rows) do
+        local information, reason = selectableEvent(row.name)
+        row.reason = not information and reason or nil
+    end
+    return rows
+end
+
+local function printEventQueue(ply)
+    -- Capture every row and availability before the first reply can reenter.
+    local rows = queueSnapshot()
+    queueReply(ply, "Encounter queue: " .. #rows .. "/" .. queueCapacity .. " (session only).")
+    for i, row in ipairs(rows) do
+        queueReply(ply, i .. '. "' .. row.name,
+            '" [' .. (row.reason and ("unavailable: " .. row.reason) or "available") .. "]")
+    end
+    queueReply(ply, "Selected ready batch > next-event override > queue head > random. Unavailable choices block; !dropQueuedEvent or !clearEventQueue removes a blocked head. Session end loses the queue.")
+end
+
+hook.Add("PlayerSay", "manageActivatorEventQueue", function(ply, text)
+    if type(text) ~= "string" then return end
+    local command = text:match("^(!%S+)")
+    if command ~= "!queueEvent" and command ~= "!eventQueue"
+        and command ~= "!dropQueuedEvent" and command ~= "!clearEventQueue" then return end
+    -- Recognized queue commands stay private even when admission or feedback fails.
+    pcall(function()
+        if not IsValid(ply) or not ply:IsPlayer() then return end
+        if not ply:IsAdmin() then
+            adminLine(ply, "Only admins can manage or inspect the encounter queue.")
+            return
+        end
+        if command == "!queueEvent" then
+            local name = text:match("^!queueEvent%s(.*)$")
+            if not name or name == "" then
+                queueReply(ply, "Usage: !queueEvent <exact configured name> (case-sensitive; session FIFO holds 16; repeats allowed).")
+                return
+            end
+            local information, reason = selectableEvent(name)
+            if not information then
+                queueReply(ply, "Encounter queue unchanged: " .. reason .. ".")
+                return
+            end
+            if not queueAdmin(ply) then return end
+            -- Validation can reenter; read the current length immediately at commit.
+            if #encounterQueue >= queueCapacity then
+                queueReply(ply, "Encounter queue unchanged: full (16/16). Use !dropQueuedEvent or !clearEventQueue.")
+                return
+            end
+            encounterQueue[#encounterQueue + 1] = {name = name}
+            queueReply(ply, 'Appended to the encounter queue: "' .. name, '" (' .. #encounterQueue .. '/16).')
+        elseif text ~= command then
+            queueReply(ply, "Usage: " .. command)
+        elseif command == "!eventQueue" then
+            printEventQueue(ply)
+        elseif command == "!dropQueuedEvent" then
+            local item = table.remove(encounterQueue, 1)
+            if item then queueReply(ply, 'Dropped encounter queue head: "' .. item.name, '".')
+            else queueReply(ply, "Encounter queue is already empty.") end
+        else
+            local count = #encounterQueue
+            encounterQueue = {}
+            queueReply(ply, count == 0 and "Encounter queue is already empty."
+                or ("Encounter queue cleared (" .. count .. " remaining items removed)."))
+        end
+    end)
+    return ""
+end)
+
 local function selectionLine(ply, prefix, name)
     if not name then adminLine(ply, prefix .. "none.") return end
     adminLine(ply, prefix .. '"' .. name, '"' .. (selectableEvent(name) and "" or " (unavailable)") .. ".")
@@ -113,7 +210,7 @@ local function nameList(ply, names, prefix, counts)
 end
 
 local function selectionHelp(ply)
-    adminLine(ply, "Usage: !nextEvent <exact configured name> (case-sensitive). !clearNextEvent clears the pending choice. !listEvents [page] shows the full catalog.")
+    adminLine(ply, "Usage: !nextEvent <exact configured name> (case-sensitive). !clearNextEvent clears the next-event override. !listEvents [page] shows the full catalog.")
     local names, seen = {}, {}
     for _, event in pairs(type(NPCEdits) == "table" and NPCEdits or {}) do
         if type(event) == "table" and type(event.name) == "string" and not seen[event.name] then
@@ -396,7 +493,7 @@ local function selectEventReference(ply, text, inspection)
     local target = catalogReferenceTarget(ply, token, inspection)
     if not target then
         if IsValid(ply) and ply:IsPlayer() then
-            adminLine(ply, "Next event unchanged: reference unavailable. Use !listEvents and copy one eligible ref from your latest page within 60 seconds.")
+            adminLine(ply, "Next-event override unchanged: reference unavailable. Use !listEvents and copy one eligible ref from your latest page within 60 seconds.")
         end
         return
     end
@@ -404,7 +501,7 @@ local function selectEventReference(ply, text, inspection)
     catalogInspections[ply] = nil
     pendingSelection = {name = target.name}
     detailRequests = {}
-    adminLine(ply, 'Queued for the next fresh automatic batch: "' .. target.name, '".')
+    adminLine(ply, 'Next-event override for the next fresh batch: "' .. target.name, '".')
 end
 
 -- Only scalar diagnostics reach chat. Keep complete UTF-8 characters and reserve
@@ -524,11 +621,16 @@ local function positionStatus(information, reason, field)
 end
 
 local function spawnDefinitionStatus(count, readyName)
-    local name = readyName or (count == 0 and pendingSelection and pendingSelection.name)
+    local name, source = readyName, "selected batch: "
+    if not name and queueClaim and ownsQueueClaim(queueClaim) then
+        name, source = queueClaim.name, queueClaim.settled and "selected queue batch: " or "queue claim preparing: "
+    elseif not name and count == 0 then
+        if pendingSelection then name, source = pendingSelection.name, "next-event override: "
+        elseif encounterQueue[1] then name, source = encounterQueue[1].name, "queue head: " end
+    end
     if name then
         local information, reason = selectableEvent(name)
-        return (readyName and "selected batch: " or "pending selection: ")
-            .. (information and "information present; engine unchecked" or reason)
+        return source .. (information and "information present; engine unchecked" or reason)
     end
     if NPCEdits == nil then return "random: no configured pool" end
     if type(NPCEdits) ~= "table" then return "random: unassessable pool" end
@@ -1173,6 +1275,10 @@ local function removeEventEnemy(ply, text)
 end
 
 local function printSelectionStatus(ply)
+    local queuedCount, head = #encounterQueue, encounterQueue[1]
+    local headName = head and head.name
+    local headInformation, headReason
+    if headName then headInformation, headReason = selectableEvent(headName) end
     if eventActive then
         adminLine(ply, 'Active event: "' .. activeEventName, '" (' .. totalEnemies .. "/" .. initialEnemies
             .. " enemies remaining" .. (eventInterrupted and "; interrupted" or "") .. ").")
@@ -1191,7 +1297,14 @@ local function printSelectionStatus(ply)
     nameList(ply, names, "Ready event: ", counts)
     local readyName = selectedBatchAlive() and selectedBatchName or nil
     selectionLine(ply, "Selected ready batch: ", readyName)
-    selectionLine(ply, "Pending next batch: ", pendingSelection and pendingSelection.name)
+    selectionLine(ply, "Next-event override: ", pendingSelection and pendingSelection.name)
+    if headName then
+        queueReply(ply, "Encounter queue: " .. queuedCount .. '/16; head: "' .. headName,
+            '" [' .. (headInformation and "available" or ("unavailable: " .. headReason)) .. "].")
+        if not headInformation then
+            queueReply(ply, "Unavailable queue head retained. Use !dropQueuedEvent or !clearEventQueue; a next-event override can run ahead of it.")
+        end
+    else queueReply(ply, "Encounter queue: 0/16; head: none.") end
     printSpawnConditions(ply, count, readyName)
 end
 
@@ -1262,18 +1375,18 @@ hook.Add("PlayerSay", "selectNextActivatorEvent", function(ply, text)
         if not name or name == "" then selectionHelp(ply) return "" end
         local info, reason = selectableEvent(name)
         if not info then
-            adminLine(ply, "Next event unchanged: " .. reason .. ". Use !nextEvent to list configured names.")
+            adminLine(ply, "Next-event override unchanged: " .. reason .. ". Use !nextEvent to list configured names.")
             return ""
         end
         pendingSelection = {name = name}
         detailRequests = {}
-        adminLine(ply, 'Queued for the next fresh automatic batch: "' .. name, '".')
+        adminLine(ply, 'Next-event override for the next fresh batch: "' .. name, '".')
     elseif text ~= command then
         adminLine(ply, "Usage: " .. command)
     elseif command == "!clearNextEvent" then
         pendingSelection = nil
         detailRequests = {}
-        adminLine(ply, "Pending next event cleared.")
+        adminLine(ply, "Next-event override cleared.")
     else
         printSelectionStatus(ply)
     end
@@ -1577,6 +1690,90 @@ net.Receive("SendNPCInformation", function(_, ply)
     end
 end)
 
+-- Queue-only admission checks surround engine callbacks. Legacy loops below retain
+-- their existing API/sampling order and override qualification behavior.
+local queueInterrupted = "Immediate activator attempt interrupted by a queue claim, spawn control or encounter change; actors may remain. No retry was scheduled."
+
+local function queuedReadyCount(claim)
+    -- Same-claim nested admission can invalidate this captured entity list without
+    -- changing schedule or ownership. Retire only this scan, with no retry loop.
+    local recount = {}
+    claim.recount = recount
+    local function currentScan()
+        return queueMayAdmit(claim) and claim.recount == recount
+    end
+    local count = 0
+    local entities = ents.FindByClass("activatorent")
+    if not currentScan() then return end
+    for _, ent in pairs(entities) do
+        local valid = IsValid(ent)
+        if not currentScan() then return end
+        if valid then
+            local deleting = ent:IsMarkedForDeletion()
+            if not currentScan() then return end
+            if not deleting then count = count + 1 end
+        end
+    end
+    return count
+end
+
+local function settleQueueActor(claim, activator)
+    if not ownsQueueClaim(claim) then return end
+    local valid = IsValid(activator)
+    if not ownsQueueClaim(claim) or not valid then return end
+    local deleting = activator:IsMarkedForDeletion()
+    if not ownsQueueClaim(claim) or deleting then return end
+    -- Sample the name after usability; a synchronous Spawn rename is not a claim.
+    local name = activator.EventIdentifier
+    if not ownsQueueClaim(claim) or name ~= claim.name then return end
+    selectedBatchName, selectedBatchEntities = claim.name, claim.owners
+    claim.owners[activator] = true
+    if not claim.settled then
+        claim.settled = true
+        if encounterQueue[1] == claim.item then table.remove(encounterQueue, 1) end
+    end
+end
+
+local function finishQueuedBatch(claim, immediate, spawnPosition, maximum, initialCount)
+    -- This attempt's original bound and sampled maximum never grow after reentry.
+    for i = initialCount + 1, maximum do
+        if not queueMayAdmit(claim) then return queueInterrupted end
+        if not spawnPosition then break end
+        -- Include the first boundary after getters, and manual actors visible during
+        -- nested Spawn. A stale numeric-for bound is not another creation admission.
+        local count = queuedReadyCount(claim)
+        if count == nil or not queueMayAdmit(claim) then return queueInterrupted end
+        if count >= maximum then break end
+        local activator = ents.Create("activatorent")
+        if not ownsQueueClaim(claim) then return queueInterrupted end
+        local valid = IsValid(activator)
+        if not ownsQueueClaim(claim) then return queueInterrupted end
+        if valid then
+            activator.EventIdentifier = claim.name
+            if not ownsQueueClaim(claim) then return queueInterrupted end
+            activator:SetPos(spawnPosition)
+            if not ownsQueueClaim(claim) then return queueInterrupted end
+            activator:Spawn()
+            settleQueueActor(claim, activator)
+            -- An admitted actor may settle after pause; the old generation cannot
+            -- sample again, admit again or stop a restarted timer.
+            if not queueMayAdmit(claim) then return queueInterrupted end
+            local map = game.GetMap()
+            if not queueMayAdmit(claim) then return queueInterrupted end
+            spawnPosition = returnActivatorSpawns(map)
+            if not queueMayAdmit(claim) then return queueInterrupted end
+        end
+    end
+    if not queueMayAdmit(claim) then return queueInterrupted end
+    local count = queuedReadyCount(claim)
+    if count == nil or not queueMayAdmit(claim) then return queueInterrupted end
+    activatorCount = count
+    if count >= maximum and count > 0 then timer.Stop("activatorSpawner") end
+    if immediate then
+        return "Immediate activator attempt finished. Ready activators: " .. count .. " / " .. maximum .. ". No retry was scheduled."
+    end
+end
+
 -- One ordinary ready-batch attempt. Keep configuration, RNG and API order shared.
 local function attemptReadyBatch(immediate)
     if automaticSpawnsPaused then return "Immediate activator attempt blocked: automatic spawning is paused." end
@@ -1588,20 +1785,54 @@ local function attemptReadyBatch(immediate)
     for _, ent in pairs(ents.FindByClass("activatorent")) do
         if usableActivator(ent) then activatorCount = activatorCount + 1 end
     end
-    if not hasActivatorSpawns(game.GetMap()) then return "Immediate activator attempt blocked: no activator positions are available." end
-    local admittedSelection = activatorCount == 0 and pendingSelection or nil
-    local selectedName = selectedBatchName or (admittedSelection and admittedSelection.name)
+    local initialCount = activatorCount
+    local claim = queueClaim and not queueClaim.retired and queueClaim or nil
+    if not claim and not selectedBatchName and activatorCount == 0 and not pendingSelection and encounterQueue[1] then
+        -- A nested chain may continue a claim, but cannot start or replace one.
+        if spawnAttemptDepth ~= 1 or queueClaim then
+            return "Immediate activator attempt deferred: an encounter queue choice is already in flight."
+        end
+        local item = encounterQueue[1]
+        claim = {item = item, name = item.name, owners = {}, generation = generation, settled = false, retired = false}
+        queueClaim = claim
+    end
+    if claim and not queueMayAdmit(claim) then return queueInterrupted end
+    local hasPositions
+    if claim then
+        local map = game.GetMap()
+        if not queueMayAdmit(claim) then return queueInterrupted end
+        hasPositions = hasActivatorSpawns(map)
+        if not queueMayAdmit(claim) then return queueInterrupted end
+    else hasPositions = hasActivatorSpawns(game.GetMap()) end
+    if not hasPositions then return "Immediate activator attempt blocked: no activator positions are available." end
+    local admittedSelection = not claim and activatorCount == 0 and pendingSelection or nil
+    local selectedName = (claim and claim.name) or selectedBatchName or (admittedSelection and admittedSelection.name)
     local identifier
     if selectedName then
-        if not selectableEvent(selectedName) then return "Immediate activator attempt blocked: the selected event is unavailable." end
+        local available = selectableEvent(selectedName)
+        if claim and not queueMayAdmit(claim) then return queueInterrupted end
+        if not available then
+            if claim then return "Immediate activator attempt blocked: the encounter queue head is unavailable. Use !dropQueuedEvent or !clearEventQueue." end
+            return "Immediate activator attempt blocked: the selected event is unavailable."
+        end
         identifier = selectedName
     else identifier = determineRandomEvent() end
-    if not identifier or not returnNPCInformation(identifier) then return "Immediate activator attempt blocked: event information is unavailable." end
-    local spawnPosition = returnActivatorSpawns(game.GetMap())
+    local information = identifier and returnNPCInformation(identifier)
+    if claim and not queueMayAdmit(claim) then return queueInterrupted end
+    if not information then return "Immediate activator attempt blocked: event information is unavailable." end
+    local spawnPosition
+    if claim then
+        local map = game.GetMap()
+        if not queueMayAdmit(claim) then return queueInterrupted end
+        spawnPosition = returnActivatorSpawns(map)
+        if not queueMayAdmit(claim) then return queueInterrupted end
+    else spawnPosition = returnActivatorSpawns(game.GetMap()) end
     if not spawnPosition then return "Immediate activator attempt blocked: no position was sampled." end
 
     local maximum = returnMaxActivators() or 1
+    if claim and not queueMayAdmit(claim) then return queueInterrupted end
     if not finiteStatusNumber(maximum) then return "Immediate activator attempt blocked: configured capacity is invalid." end
+    if claim then return finishQueuedBatch(claim, immediate, spawnPosition, maximum, initialCount) end
     for i = activatorCount + 1, maximum do
         -- A previous Spawn callback may have made the next sample unavailable.
         if automaticSpawnsPaused or generation ~= spawnScheduleGeneration or (immediate and eventActive) then
@@ -1655,6 +1886,7 @@ local function runSpawnAttempt(immediate)
         return attemptReadyBatch(immediate)
     end)
     spawnAttemptDepth = spawnAttemptDepth - 1
+    if spawnAttemptDepth == 0 then queueClaim = nil end
     return ok, result
 end
 
