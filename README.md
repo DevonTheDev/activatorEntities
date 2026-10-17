@@ -120,6 +120,7 @@ Admin chat commands:
 - `!clearSpawnMarker`: privately clear your temporary spawn snapshot
 - `!removeEnemySpawn <key>` / `!removeActivatorSpawn <key>`: remove one freshly inspected position
 - `!moveEnemySpawn <key>` / `!moveActivatorSpawn <key>`: move one freshly inspected position to where you are standing
+- `!undoSpawnEdit`: privately undo your globally latest accepted stored-position edit, once
 - `!saveSpawns`: privately retry the verified save of accepted spawn positions for all maps
 - `!spawnSaveStatus`: privately read cached session/load and historical save-attempt status, also while dead
 - `!stopEvent`: remove the current event's enemies; restart the spawn delay unless paused
@@ -187,6 +188,54 @@ command, change a selection or marker, or consume, replace or renew any inspecte
 page/reference. Existing command syntax, replies and permissions are unchanged.
 The command needs an updated server; native delivery through the deployed chat
 addon still requires an in-game check.
+
+### Undo your latest stored-position edit
+
+Use `!undoSpawnEdit` with no arguments to undo the **globally latest accepted**
+spawn-position add, move or removal. Only the same still-connected admin who
+made that edit can undo it, including while dead. Both enemy and activator bases,
+indexed removals and bare highest-key removals participate in one shared step.
+Any later accepted edit by any admin replaces that step, even a move to the same
+coordinates. Rejected edits, listing, marking and save retries do not replace it.
+There is no redo, per-admin stack or saved undo history.
+
+Undo deletes an added key or restores the removed/overwritten coordinates at the
+exact original key. Sparse keys and unrelated points stay intact. Undoing the
+first add on a new map leaves its empty map record and both lists present. The
+original position is copied from captured coordinates, not reread from a Vector
+that external code may later have changed. If an accepted legacy edit could not
+be captured safely, its reply says that edit cannot be undone; older history is
+still lost.
+
+The command is private, including usage and refusal replies. It needs no inspected
+page and has no timer expiry. Current-map, root, map-record, list, Vector identity
+and exact post-edit coordinate checks refuse stale targets and key reuse. An
+observed conflict permanently retires that step; restoring equal values does not
+revive it. Disconnect, initialization, script reload and restart clear history.
+An entirely unobserved external mutate-and-restore cycle cannot be reconstructed.
+
+An accepted undo is consumed before it changes memory and attempts the ordinary
+save/backup path. A failed or disabled save leaves the undo in memory and cannot
+make it usable twice. `!saveSpawns` retries saving the current whole configuration;
+it does not restore history or unlock failed-load saving. Success feedback means
+that attempt's serialized bytes were read back exactly, not crash durability or
+a guarantee against a newer callback-created edit. Saving/reply failures do not
+roll back the inverse. Update the server addon before using this command; older
+servers may treat unknown commands as ordinary public chat.
+
+Undo invalidates affected inspection pages. Existing marker packets stay
+historical snapshots; existing actors, enemies, encounter choices and timers are
+unchanged. Later normal placement may use the restored stored point.
+
+Focused stored-position regressions use the actual server command with GMod API
+doubles. From the repository root with Lua 5.3, run:
+
+```sh
+lua -e 'assert(loadfile("tests/run_spawn_position_undo.lua"))()({mode="candidate",source_path="roleplayAddon/lua/autorun/server/sv_config.lua",tests_path="tests",helper_path="tests/gmod.lua"})'
+```
+
+This focused run checks stored edits, one-step undo and persistence compatibility;
+it is not a native Garry's Mod server check.
 
 ### Correct one spawn point
 

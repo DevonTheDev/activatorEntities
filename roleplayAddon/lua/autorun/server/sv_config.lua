@@ -194,6 +194,8 @@ local function validPositionList(positions)
 end
 
 local spawnInspections = {}
+-- One globally latest accepted stored-position edit; never serialized.
+local latestSpawnEdit
 -- Ownership covers pending configured-catalogue capture, not a new edit grant.
 local spawnCatalogueRequests = {}
 local function currentSpawnCatalogue(sender, request)
@@ -520,7 +522,7 @@ local function inspectedSpawnTarget(sender, kind, token, mapName)
         local current = positions[shown.key]
         if not current or current.x ~= shown.x or current.y ~= shown.y or current.z ~= shown.z then return nil end
     end
-    return positions, inspection.shown[token].key
+    return positions, inspection.shown[token].key, information
 end
 
 -- A request owns only its current stack operation, never the displayed snapshot.
@@ -584,8 +586,99 @@ local function copySpawnDestination(sender, previous)
     if ok then return position end
 end
 
+-- Before/after coordinates are detached scalars. Vector identities only prove
+-- the observed post-state or exclude known aliases when constructing an inverse.
+local function spawnEditPoint(position)
+    if not isvector(position) then return end
+    local x, y, z = position.x, position.y, position.z
+    if finiteNumber(x) and finiteNumber(y) and finiteNumber(z) then
+        return {vector = position, x = x, y = y, z = z}
+    end
+end
+
+local function spawnEditPointMatches(position, point)
+    return point and rawequal(position, point.vector)
+        and position.x == point.x and position.y == point.y and position.z == point.z
+end
+
+local function retireSpawnEdit(receipt)
+    if rawequal(latestSpawnEdit, receipt) then latestSpawnEdit = nil end
+end
+
+-- Raw structure checks after callback-capable validation. Equal-valued roots,
+-- records, lists and replacement Vectors never acquire a receipt's authority.
+local function spawnEditStructureMatches(receipt)
+    if not rawequal(SpawnPositions, receipt.root) or type(SpawnPositions) ~= "table" then return false end
+    local found
+    for key, record in next, SpawnPositions do
+        if not listIndex(key) or type(record) ~= "table" then return false end
+        local map = rawget(record, "map")
+        if type(map) ~= "string" or map == "" then return false end
+        if map == receipt.map then
+            if found or not rawequal(record, receipt.information) then return false end
+            found = record
+        end
+    end
+    return found ~= nil and rawequal(rawget(found, spawnKinds[receipt.kind].field), receipt.positions)
+end
+
+local function spawnEditStoredTargetMatches(receipt)
+    local current = rawget(receipt.positions, receipt.key)
+    local same = receipt.after and spawnEditPointMatches(current, receipt.after) or (not receipt.after and current == nil)
+    return same and spawnEditStructureMatches(receipt) and rawequal(latestSpawnEdit, receipt)
+end
+
+local function spawnEditTargetMatches(receipt)
+    if game.GetMap() ~= receipt.map then return false end
+    local information, positions = validatedSpawnList(receipt.map, receipt.kind)
+    if not rawequal(information, receipt.information) or not rawequal(positions, receipt.positions) then return false end
+    if game.GetMap() ~= receipt.map then return false end
+    return spawnEditStoredTargetMatches(receipt)
+end
+
+local function acceptSpawnEdit(sender, mapName, information, positions, kind, key, operation, position)
+    local previous = rawget(positions, key)
+    local captured, before = pcall(function()
+        if previous ~= nil then return spawnEditPoint(previous) end
+    end)
+    -- Preflight may reenter. Only the value actually overwritten can supply the
+    -- inverse; uncertainty disables undo, never changes legacy edit admission.
+    local exactBefore = captured and (previous == nil or before ~= nil)
+    if exactBefore then
+        local checked, same = pcall(function()
+            return (previous == nil or spawnEditPointMatches(previous, before))
+                and rawequal(rawget(positions, key), previous)
+        end)
+        exactBefore = checked and same
+    end
+    local receipt = {owner = sender, map = mapName, root = SpawnPositions,
+        information = information, positions = positions, kind = kind, key = key,
+        operation = operation, before = before}
+    -- No callback may occur between the accepted key write and reservation.
+    rawset(positions, key, position)
+    latestSpawnEdit = receipt
+    local finalized, safe = pcall(function()
+        if not exactBefore or (operation == "add" and previous ~= nil)
+            or (operation ~= "add" and previous == nil)
+            or (operation ~= "remove" and position == nil) then return false end
+        if position ~= nil then
+            receipt.after = spawnEditPoint(position)
+            if not receipt.after then return false end
+        end
+        if not spawnEditTargetMatches(receipt) then return false end
+        receipt.ready = true
+        return true
+    end)
+    if not finalized or not safe then
+        retireSpawnEdit(receipt) -- Never clear a newer nested accepted edit.
+        return false
+    end
+    return true
+end
+
 hook.Add("PlayerDisconnected", "clearSpawnInspection", function(sender)
     spawnInspections[sender], spawnMarkerOperations[sender], spawnCatalogueRequests[sender] = nil, nil, nil
+    if latestSpawnEdit and rawequal(latestSpawnEdit.owner, sender) then latestSpawnEdit = nil end
 end)
 
 -- The save routine is assigned below before any chat command can run.
@@ -599,6 +692,68 @@ local function confirmSpawnEdit(sender, message)
         message = message .. " This change remains in memory; saving failed, is disabled or could not be verified. Retry: !saveSpawns; check the server console."
     end
     sender:ChatPrint(message)
+end
+
+-- Claim the receipt before any native admission call. All recognized requests
+-- stay private, including thrown admission, restoration, save and reply calls.
+local function undoSpawnEdit(sender, text)
+    local receipt = latestSpawnEdit
+    local committed = false
+    local ok, message = pcall(function()
+        if not IsValid(sender) or not sender:IsPlayer() then
+            if receipt and rawequal(receipt.owner, sender) then retireSpawnEdit(receipt) end
+            return
+        end
+        if not sender:IsAdmin() then
+            if receipt and rawequal(receipt.owner, sender) then retireSpawnEdit(receipt) end
+            return "Only admins can undo stored spawn edits."
+        end
+        if text ~= "!undoSpawnEdit" then return "Usage: !undoSpawnEdit (undo your globally latest stored-position edit)." end
+        if not receipt or not rawequal(receipt.owner, sender) then
+            return "No latest stored-position edit is available for you to undo."
+        end
+        if not rawequal(latestSpawnEdit, receipt) or not receipt.ready then
+            return "Spawn unchanged: the latest edit is unavailable or still being captured."
+        end
+        if not spawnEditTargetMatches(receipt) then
+            retireSpawnEdit(receipt)
+            return "Spawn unchanged: the stored position or its configuration changed; undo is unavailable."
+        end
+        local restored
+        if receipt.before then
+            local before = receipt.before
+            restored = Vector(before.x, before.y, before.z)
+            if not isvector(restored) or rawequal(restored, before.vector)
+                or (receipt.after and rawequal(restored, receipt.after.vector))
+                or restored.x ~= before.x or restored.y ~= before.y or restored.z ~= before.z then
+                return "Spawn unchanged: the previous position could not be copied exactly."
+            end
+        end
+        -- Restoration/admission callbacks may accept a newer edit. Never apply
+        -- an older inverse, even if its target returns to equal coordinates.
+        if not spawnEditTargetMatches(receipt)
+            or not IsValid(sender) or not sender:IsPlayer() or not sender:IsAdmin()
+            or not spawnEditStoredTargetMatches(receipt) then
+            retireSpawnEdit(receipt)
+            return "Spawn unchanged: the latest edit or its owner changed; undo is unavailable."
+        end
+        latestSpawnEdit = nil
+        rawset(receipt.positions, receipt.key, restored)
+        committed = true
+        invalidateSpawnInspections(receipt.map, receipt.kind)
+        local saved, verified = pcall(saveSpawnPositions)
+        local result = "Latest " .. receipt.kind .. " spawn edit undone in memory."
+        if saved and verified then
+            return result .. " Spawn save verified for this attempt."
+        end
+        return result .. " This change remains in memory; saving failed, is disabled or could not be verified. Retry: !saveSpawns; check the server console."
+    end)
+    if not ok then
+        if not committed and receipt and rawequal(receipt.owner, sender) then retireSpawnEdit(receipt) end
+        message = committed and "Spawn edit undone in memory; saving or feedback could not be completed. Check !spawnSaveStatus; retry saving with !saveSpawns."
+            or "Spawn unchanged: undo could not be completed."
+    end
+    if message then pcall(function() sender:ChatPrint(message) end) end
 end
 
 -- Literal help never reads configuration or changes inspection/marker authority.
@@ -635,6 +790,8 @@ local activatorHelp = {
         "!moveEnemySpawn <key> / !moveActivatorSpawn <key> - move one inspected base to your current position.",
         "!removeEnemySpawn [key] / !removeActivatorSpawn [key] - remove one base; omitting the key removes the highest stored key.",
         "Indexed edits require a current inspected page. Copy shown stored keys, never row ranks or enemy indices.",
+        "!undoSpawnEdit - undo your one globally latest accepted add/move/removal, including when dead; exact command, no arguments.",
+        "Any later accepted edit replaces undo. Same connected admin only; session history clears on disconnect/restart. No redo.",
         "New pages, accepted edits or lifecycle/identity changes can invalidate permission. Configured pages have no timed or death expiry.",
         "!nearSpawns requires a living admin; !listSpawns also works when dead.",
         "Accepted edits attempt saving immediately; failure can leave changes in memory.",
@@ -682,6 +839,10 @@ local activatorHelp = {
 hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if type(text) ~= "string" then return end
     local name = text:match("^(!%S+)")
+    if name == "!undoSpawnEdit" then
+        undoSpawnEdit(sender, text)
+        return ""
+    end
     if name == "!spawnSaveStatus" then
         -- Contain native admission/reply errors and keep recognized chat private.
         pcall(function()
@@ -778,23 +939,24 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
             sender:ChatPrint("Usage: " .. name .. " <key>; copy an exact key from !listSpawns " .. kind .. ".")
             return ""
         end
-        local positions, key = inspectedSpawnTarget(sender, kind, token)
+        local mapName = game.GetMap()
+        local positions, key, information = inspectedSpawnTarget(sender, kind, token, mapName)
         if not positions then
             sender:ChatPrint("Spawn unchanged: inspect a current key with !listSpawns " .. kind .. " and copy it exactly.")
             return ""
         end
+        local position
         if moving then
-            local position = copySpawnDestination(sender, positions[key])
+            position = copySpawnDestination(sender, positions[key])
             if not position then
                 sender:ChatPrint("Spawn unchanged: your position could not be copied as a finite Vector. Try again from a valid position.")
                 return ""
             end
-            positions[key] = position
-        else
-            positions[key] = nil
         end
-        invalidateSpawnInspections(game.GetMap(), kind)
-        confirmSpawnEdit(sender, "The " .. kind .. " spawn at key " .. token .. " was successfully " .. (moving and "moved." or "removed."))
+        local undoable = acceptSpawnEdit(sender, mapName, information, positions, kind, key, moving and "move" or "remove", position)
+        invalidateSpawnInspections(mapName, kind)
+        confirmSpawnEdit(sender, "The " .. kind .. " spawn at key " .. token .. " was successfully " .. (moving and "moved." or "removed.")
+            .. (undoable and "" or " This edit cannot be undone."))
         return ""
     end
     if name == "!stopEvent" then
@@ -827,14 +989,15 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
     if not command then return end
 
     local kind = command[1] == "enemySpawnPositions" and "enemy" or "activator"
-    local information, positions, reason = editableSpawnList(kind, true)
+    local mapName = game.GetMap()
+    local information, positions, reason = validatedSpawnList(mapName, kind, true)
     if reason then
         sender:ChatPrint("Spawn unchanged: " .. reason .. ".")
         return
     end
     if command[3] then
         if not information then
-            information = {map = game.GetMap(), enemySpawnPositions = {}, activatorSpawnPositions = {}}
+            information = {map = mapName, enemySpawnPositions = {}, activatorSpawnPositions = {}}
             table.insert(SpawnPositions, information)
             positions = information[command[1]]
         end
@@ -844,15 +1007,18 @@ hook.Add("PlayerSay", "setUpSpawnPoints", function(sender, text)
             sender:ChatPrint("Cannot add a spawn: no exact free key follows the current maximum. Existing positions are unchanged.")
             return ""
         end
-        positions[nextKey] = sender:GetPos()
-        invalidateSpawnInspections(game.GetMap(), kind)
-        confirmSpawnEdit(sender, "New " .. command[2] .. " Spawn Successfully Set at " .. tostring(sender:GetPos()) .. ".")
+        local position = sender:GetPos()
+        local undoable = acceptSpawnEdit(sender, mapName, information, positions, kind, nextKey, "add", position)
+        invalidateSpawnInspections(mapName, kind)
+        confirmSpawnEdit(sender, "New " .. command[2] .. " Spawn Successfully Set at " .. tostring(sender:GetPos()) .. "."
+            .. (undoable and "" or " This edit cannot be undone."))
     else
         local last = positions and table.maxn(positions) or 0
         if last > 0 then
-            positions[last] = nil
-            invalidateSpawnInspections(game.GetMap(), kind)
-            confirmSpawnEdit(sender, "The previous " .. command[2] .. " spawn was successfully removed.")
+            local undoable = acceptSpawnEdit(sender, mapName, information, positions, kind, last, "remove", nil)
+            invalidateSpawnInspections(mapName, kind)
+            confirmSpawnEdit(sender, "The previous " .. command[2] .. " spawn was successfully removed."
+                .. (undoable and "" or " This edit cannot be undone."))
         else
             sender:ChatPrint("There are no more " .. command[2] .. " spawns to remove.")
         end
@@ -970,6 +1136,7 @@ end)
 
 hook.Add("Initialize", "loadTheTables", function()
     spawnInspections, spawnMarkerOperations, spawnCatalogueRequests = {}, {}, {}
+    latestSpawnEdit = nil
     canSaveSpawnPositions = false
     spawnLoadDecision, lastSpawnSaveResult = "pending", "none completed"
     lastGoodSpawnBytes, preparedSpawnBackupBytes = nil, nil
